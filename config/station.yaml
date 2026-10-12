@@ -1,0 +1,56 @@
+# Cấu hình trạm HA4M (camera Azure Kinect, ảnh Color 2048x1536).
+# Toạ độ zone theo pixel ảnh GỐC. Vẽ lại bằng:  python src/tools/pick_zones.py --subject U001 --trial V001 --frame 1700
+fps: 30                    # xác nhận: paper HA4M + DeviceTimeStamp (median Δt = 33.33 ms)
+px_per_cm: null            # null = quãng đường theo px
+moving_speed_px_s: 120     # ngưỡng moving/still — tinh chỉnh theo outputs/features/*_speed.png
+min_event_s: 0.25
+idle_threshold_s: 3.0      # R3
+idle_still_s: 1.5          # none + still > 1.5s → idle
+pick_max_still_s: 2.0      # khay + still ≤ 2s → pick; dài hơn → search
+extract_roi: [350, 250, 1500, 1150]   # x, y, w, h — vùng chạy pose (bỏ tay người gán nhãn ở mép trái)
+
+features:
+  score_min: 0.3
+  max_gap_frames: 15
+  max_jump_px_s: 2500     # loại điểm gai (cổ tay phải thật max ~2350 px/s ở U001_V001)
+  oneeuro_mincutoff: 1.0
+  oneeuro_beta: 0.01
+
+# Thứ tự = ưu tiên khi polygon chồng nhau (zone đầu tiên chứa điểm thắng).
+# Tên bắt đầu bằng "assembly" = vùng lắp, "done" = vùng thành phẩm, còn lại = khay linh kiện.
+# Polygon = vùng CỔ TAY khi với vào khay (cổ tay dừng sau mép khay ~60–80px về phía người), không phải
+# viền khay. Phác từ frame 1700 của U001_V001 + quỹ đạo cổ tay phải theo nhãn oracle (outputs/zones_U001_V001.png).
+# Tên khay theo linh kiện suy từ quỹ đạo cổ tay trong từng bước oracle; bin_left_2 / bin_right_2 chưa xác định.
+zones:
+  bin_screws_allen:     [[640, 975], [840, 975], [840, 1058], [640, 1058]]     # khay giữa trái lớn: vít + lục giác
+  bin_sun_gear_bearing: [[540, 1060], [722, 1060], [722, 1200], [540, 1200]]   # hàng trước #1
+  bin_sun_gear:         [[724, 1060], [900, 1060], [900, 1200], [724, 1200]]   # hàng trước #2
+  bin_sun_shaft:        [[920, 1040], [1080, 1040], [1080, 1200], [920, 1200]] # hàng trước #3
+  bin_carrier_shaft:    [[1100, 1040], [1260, 1040], [1260, 1200], [1100, 1200]] # hàng trước #4
+  bin_planet_gears:     [[1290, 1040], [1520, 1040], [1520, 1200], [1290, 1200]] # hàng trước #5 (khay lớn)
+  bin_gear_bearings:    [[1390, 870], [1570, 870], [1570, 1015], [1390, 1015]]   # khay phải trên: Carrier + Gear Bearings
+  bin_right_2:          [[1530, 1016], [1640, 1016], [1640, 1130], [1530, 1130]] # khay phải dưới
+  bin_left_1:           [[510, 840], [660, 840], [660, 972], [510, 972]]        # khay trái trên: Ring Bear, Cover
+  bin_left_2:           [[400, 930], [600, 930], [600, 1080], [400, 1080]]
+  assembly_area:        [[820, 620], [1340, 620], [1340, 1035], [820, 1035]]     # đồ gá giữa bàn + trước ngực (siết vít khi cầm cụm)
+
+# 12 bước SOP theo Table 3 paper HA4M. zone = khay đặc trưng (null = không có khay rõ → không làm mốc predicted).
+# va: value-added (lắp/siết tạo giá trị). Ở trạm này mọi bước đều gồm lấy + lắp; đánh va=true cho bước
+# có thao tác lắp chính, false cho bước thuần cấp/đặt chi tiết nền — giả định, kỹ sư IE cần duyệt.
+steps:
+  - {id: 1,  name: "Pick up/Place Carrier",                 zone: bin_gear_bearings,    reps: 1, va: false}
+  - {id: 2,  name: "Pick up/Place Gear Bearings (x3)",      zone: bin_gear_bearings,    reps: 3, va: true}
+  - {id: 3,  name: "Pick up/Place Planet Gears (x3)",       zone: bin_planet_gears,     reps: 3, va: true}
+  - {id: 4,  name: "Pick up/Place Carrier Shaft",           zone: bin_carrier_shaft,    reps: 1, va: true}
+  - {id: 5,  name: "Pick up/Place Sun Shaft",               zone: bin_sun_shaft,        reps: 1, va: true}
+  - {id: 6,  name: "Pick up/Place Sun Gear",                zone: bin_sun_gear,         reps: 1, va: true}
+  - {id: 7,  name: "Pick up/Place Sun Gear Bearing",        zone: bin_sun_gear_bearing, reps: 1, va: true}
+  - {id: 8,  name: "Pick up/Place Ring Bear",               zone: bin_left_1,           reps: 1, va: true}
+  - {id: 9,  name: "Pick up Block 2 and place it on Block 1", zone: null,               reps: 1, va: true}
+  - {id: 10, name: "Pick up/Place Cover",                   zone: bin_left_1,           reps: 1, va: true}
+  - {id: 11, name: "Pick up/Place Screw (x2)",              zone: bin_screws_allen,     reps: 2, va: false}
+  - {id: 12, name: "Pick up Allen Key, turn both screws, return Allen Key and the EGT", zone: bin_screws_allen, reps: 1, va: true}
+step_min_gap_s: 1.0        # 04 predicted: mốc bước sau phải cách mốc bước trước ≥ 1s
+muri_dev_deg: 30
+
+cycle_time_target_s: null

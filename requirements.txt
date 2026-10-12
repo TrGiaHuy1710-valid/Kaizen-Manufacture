@@ -1,0 +1,33 @@
+# Core
+numpy<2            # mediapipe một số bản chưa tương thích numpy 2.x
+pandas
+scipy
+scikit-learn
+tqdm
+pyarrow
+
+# Pose models
+mediapipe>=0.10.14 # kéo theo opencv-contrib-python, KHÔNG cài thêm opencv-python
+rtmlib             # RTMPose/RTMW qua ONNX, không cần mmcv
+onnxruntime        # đổi sang onnxruntime-gpu nếu có CUDA
+
+# Day 2: lọc nhiễu, zone, phân đoạn, chu kỳ
+OneEuroFilter
+supervision
+shapely
+ruptures
+stumpy
+dtaidistance
+tslearn
+
+# Pipeline CLI: config + LLM giải thích (07)
+pyyaml
+google-genai       # 07_explain: Gemini API (env GEMINI_API_KEY)
+
+# Hiển thị / dashboard
+matplotlib
+plotly
+streamlit
+
+# Dataset OpenPack (tùy chọn)
+openpack-toolkit

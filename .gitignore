@@ -1,0 +1,37 @@
+# --- Bí mật ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# --- Dữ liệu (lớn, tái tạo được) ---
+# Dataset HA4M (data/ha4m/IDU*V* là symlink tới /storage/...), video thô, keypoints + preview .mp4
+data/
+# Model MediaPipe tải bằng setup.sh
+models/*.task
+models/*.onnx
+
+# --- Output pipeline (sinh lại bằng run_all.sh) ---
+outputs/*
+# giữ báo cáo schema dữ liệu thật — các bước sau dựa vào nó
+!outputs/inspect_report.md
+
+# --- Media / tạm ---
+*.mp4
+*.avi
+*.zip
+*.log
+Thumbs.db
+.DS_Store
+
+# --- IDE ---
+.vscode/
+.idea/
