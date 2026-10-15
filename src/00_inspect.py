@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import base_parser, can_write  # noqa: E402
+from common import base_parser, can_write, setup  # noqa: E402
 import ha4m_io  # noqa: E402
 
 TAG = "00"
@@ -58,33 +58,44 @@ def main() -> None:
     ap.add_argument("--trial", default="")
     ap.add_argument("--out", default="outputs/inspect_report.md")
     a = ap.parse_args()
+    setup(a, TAG, need_run=False)
     out = Path(a.out)
     if not can_write(out, a.force, TAG):
         return
 
     trials = ha4m_io.list_trials(a.data_root)
     if not trials:
-        sys.exit(f"[{TAG}] Không thấy thư mục IDU*V* nào trong {a.data_root}")
+        print(f"[{TAG}] Không thấy thư mục video (có Color*) nào trong {a.data_root}", file=sys.stderr)
+        sys.exit(1)
     sub, tri = (a.subject, a.trial) if a.subject and a.trial else trials[0]
     vdir = ha4m_io.video_dir(a.data_root, sub, tri)
     md = [f"# Inspect report — HA4M", "", f"- data_root: `{a.data_root}`",
-          f"- Số video (IDU*V*) tìm thấy: **{len(trials)}** → {', '.join(s + t for s, t in trials[:20])}",
+          f"- Số video tìm thấy: **{len(trials)}** → {', '.join(f'{s}_{t}' for s, t in trials[:20])}"
+          + (" ..." if len(trials) > 20 else ""),
           f"- Video khảo sát: `{vdir.name}` (subject=`{sub}`, trial=`{tri}`)", "",
           "## Cây thư mục 2 cấp", "```", vdir.name + "/"] + ["    " + ln for ln in tree(vdir, 2)] + ["```", ""]
 
     # Labels
-    raw = (vdir / "Labels.txt").read_text(errors="replace").splitlines()
-    crlf = b"\r\n" in (vdir / "Labels.txt").read_bytes()
-    md += ["## Labels.txt", f"- Số dòng: {len(raw)}; CRLF: {crlf}",
-           "```"] + raw[:10] + ["```", "Schema suy ra:"] + guess_label_schema(raw[:200]) + [""]
-    fl = ha4m_io.load_frame_labels(a.data_root, sub, tri)
-    seg = ha4m_io.labels_to_segments(fl, keep_dont_care=True)
-    md += ["Các đoạn liên tiếp (action_id, repetition):", "",
-           "| action_id | rep | start_frame | end_frame | n_frames | tên (paper) |", "|---|---|---|---|---|---|"]
-    for r in seg.itertuples():
-        md.append(f"| {r.action_id} | {r.repetition} | {r.start_frame} | {r.end_frame} | "
-                  f"{r.end_frame - r.start_frame + 1} | {r.action_name} |")
-    md.append("")
+    lp = ha4m_io.labels_path(a.data_root, sub, tri)
+    fl = None
+    if lp is None:
+        md += ["## Labels", "- **KHÔNG có Labels*.txt** — trích keypoints vẫn được; oracle/eval sẽ bỏ qua video này.", ""]
+    else:
+        raw = lp.read_text(errors="replace").splitlines()
+        crlf = b"\r\n" in lp.read_bytes()
+        md += [f"## {lp.name}", f"- Số dòng: {len(raw)}; CRLF: {crlf}",
+               "```"] + raw[:10] + ["```", "Schema suy ra:"] + guess_label_schema(raw[:200]) + [""]
+        fl = ha4m_io.load_frame_labels(a.data_root, sub, tri)
+        seg = ha4m_io.labels_to_segments(fl, keep_dont_care=True)
+        md += ["Các đoạn liên tiếp (action_id, repetition):", "",
+               "| action_id | rep | start_frame | end_frame | n_frames | tên (paper) |", "|---|---|---|---|---|---|"]
+        for r in seg.itertuples():
+            md.append(f"| {r.action_id} | {r.repetition} | {r.start_frame} | {r.end_frame} | "
+                      f"{r.end_frame - r.start_frame + 1} | {r.action_name} |")
+        md.append("")
+    no_lab = [f"{s}_{t}" for s, t in trials if ha4m_io.labels_path(a.data_root, s, t) is None]
+    if no_lab:
+        md += [f"- Video thiếu nhãn trong data_root: {', '.join(no_lab)}", ""]
 
     # Color frames
     files = ha4m_io.frame_files(a.data_root, sub, tri, "Color")
@@ -93,22 +104,30 @@ def main() -> None:
     md += ["## Color frames", f"- Thư mục: `{cdir.relative_to(vdir)}` (thư mục con = serial camera)",
            "- 5 file đầu:", "```"] + [p.name for _, _, p in files[:5]] + ["```",
            f"- Pattern: `FrameID<6 số>_DeviceTimeStamp<micro giây>us.png`; file lạ bị bỏ qua: {others}",
-           f"- Số frame: **{len(files)}** (frame {files[0][0]} → {files[-1][0]}); số dòng Labels: {len(fl)}"]
+           f"- Số frame: **{len(files)}** (frame {files[0][0]} → {files[-1][0]}); số dòng Labels: "
+           f"{len(fl) if fl is not None else '— (không có nhãn)'}"]
     img = cv2.imread(str(files[len(files) // 2][2]), cv2.IMREAD_UNCHANGED)
     md.append(f"- Kích thước ảnh: **{img.shape[1]}x{img.shape[0]}**, {img.shape[2] if img.ndim == 3 else 1} kênh, {img.dtype}")
     ts = np.array([t for _, t, _ in files], dtype=np.int64)
     dt = np.diff(ts) / 1e6
     pos = dt[dt > 0]
-    fps_est = 1.0 / np.median(pos)
-    dup = int((dt == 0).sum())
-    drops = int((pos > 1.5 * np.median(pos)).sum())
-    md += [f"- fps ước lượng từ DeviceTimeStamp: **{fps_est:.2f}** (median Δt = {np.median(pos) * 1000:.2f} ms); "
-           f"paper HA4M ghi 30 fps → dùng `fps: 30` trong config",
-           f"- Δt = 0 (timestamp trùng): {dup} frame (thường ở đầu video); Δt > 1.5×median (rơi frame): {drops}",
-           f"- Thời lượng theo frame_idx/30: {len(files) / 30:.1f} s; theo timestamp: {(ts[-1] - ts[0]) / 1e6:.1f} s", ""]
+    if (ts < 0).any() or len(pos) == 0:
+        md += ["- Tên file không có DeviceTimeStamp → không ước lượng được fps; dùng `fps` trong config (GIẢ ĐỊNH 30).", ""]
+    else:
+        fps_est = 1.0 / np.median(pos)
+        dup = int((dt == 0).sum())
+        drops = int((pos > 1.5 * np.median(pos)).sum())
+        md += [f"- fps ước lượng từ DeviceTimeStamp: **{fps_est:.2f}** (median Δt = {np.median(pos) * 1000:.2f} ms); "
+               f"paper HA4M ghi 30 fps → dùng `fps: 30` trong config",
+               f"- Δt = 0 (timestamp trùng): {dup} frame (thường ở đầu video); Δt > 1.5×median (rơi frame): {drops}",
+               f"- Thời lượng theo frame_idx/30: {len(files) / 30:.1f} s; theo timestamp: {(ts[-1] - ts[0]) / 1e6:.1f} s", ""]
 
     # Skeleton
-    sk = ha4m_io.frame_files(a.data_root, sub, tri, "Skeletons")
+    try:
+        sk = ha4m_io.frame_files(a.data_root, sub, tri, "Skeletons")
+    except FileNotFoundError:
+        sk = []
+        md += ["## Skeletons", "- Không có thư mục Skeletons* (chỉ ảnh hưởng bước đối chứng Kinect).", ""]
     if sk:
         p = sk[min(100, len(sk) - 1)][2]
         lines = p.read_text().splitlines()

@@ -32,6 +32,35 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> dict:
     return cfg
 
 
+def setup(a: argparse.Namespace, tag: str, need_run: bool = True):
+    """Resolve run (--run/LATEST/legacy) và điền a.data_root, a.config mặc định. Trả RunContext | None."""
+    import run_io
+    ctx = run_io.resolve(a.run, tag) if need_run else None
+    man = ctx.manifest if ctx else {}
+    if not a.data_root:
+        a.data_root = man.get("data_root") or ha4m_io.DEFAULT_ROOT
+    if not a.config:
+        a.config = str(ctx.station_path) if ctx and ctx.station_path.exists() else DEFAULT_CONFIG
+    return ctx
+
+
+def stage_dir(ctx, override: str | None, stage: str, legacy: str) -> Path:
+    """Đường dẫn stage: --xxx-dir tường minh > thư mục trong run > đường dẫn phẳng cũ."""
+    if override:
+        return Path(override)
+    if ctx is not None:
+        return ctx.dir(stage)
+    return Path(legacy)
+
+
+def stage_file(ctx, override: str | None, stage: str, filename: str, legacy: str) -> Path:
+    if override:
+        return Path(override)
+    if ctx is not None:
+        return ctx.path(stage, filename)
+    return Path(legacy)
+
+
 def stem(subject: str, trial: str) -> str:
     return f"{subject}_{trial}"
 
@@ -42,10 +71,14 @@ def parse_stem(s: str) -> tuple[str, str]:
 
 
 def base_parser(desc: str) -> argparse.ArgumentParser:
-    """Args chung: --data-root, --config, --subjects, --trials, --force."""
-    ap = argparse.ArgumentParser(description=desc)
-    ap.add_argument("--data-root", default=ha4m_io.DEFAULT_ROOT, help="thư mục chứa các IDU*V* (env HA4M_ROOT)")
-    ap.add_argument("--config", default=DEFAULT_CONFIG)
+    """Args chung: --run, --data-root, --config, --subjects, --trials, --force."""
+    ap = argparse.ArgumentParser(description=desc, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--run", default=None,
+                    help="run_id hoặc 'latest' (mặc định: outputs/runs/LATEST; chưa có run → đường dẫn phẳng cũ)")
+    ap.add_argument("--data-root", default=None,
+                    help=f"thư mục dataset, nhiều thư mục cách nhau dấu phẩy (mặc định: data_root trong manifest "
+                         f"của run, rồi env HA4M_ROOT, rồi {ha4m_io.DEFAULT_ROOT})")
+    ap.add_argument("--config", default=None, help="mặc định: station.yaml chụp trong run, không có thì " + DEFAULT_CONFIG)
     ap.add_argument("--subjects", default="", help="vd U001,U002 (rỗng = tất cả)")
     ap.add_argument("--trials", default="", help="vd V001,V002 (rỗng = tất cả)")
     ap.add_argument("--force", action="store_true", help="ghi đè output đã có")
@@ -53,7 +86,8 @@ def base_parser(desc: str) -> argparse.ArgumentParser:
 
 
 def _split(s: str) -> set[str]:
-    return {x.strip() for x in s.split(",") if x.strip()}
+    xs = {x.strip() for x in (s or "").split(",") if x.strip()}
+    return set() if xs & {"all", "ALL"} else xs
 
 
 def select_stems(stems: list[str], subjects: str = "", trials: str = "") -> list[str]:

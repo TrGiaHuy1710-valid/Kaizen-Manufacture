@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import base_parser, can_write, load_config, parse_stem, read_json, select_stems  # noqa: E402
+from common import base_parser, can_write, load_config, parse_stem, read_json, select_stems, setup, stage_dir, stage_file  # noqa: E402
 import ha4m_io  # noqa: E402
 
 TAG = "08"
@@ -102,6 +102,12 @@ def yamazumi(trials: dict, va: dict[int, bool], target: float | None, out: Path)
                 ax.text(x, bottom + d / 2, f"{row['step_id']}", ha="center", va="center", color="white", fontsize=8,
                         fontweight="bold")
             bottom += d
+        unc = (trials[st].get("unclassified_s") or {}).get("value") or 0
+        if unc > 0:
+            ax.bar(x, unc, bottom=bottom, width=0.6, color=C_UNCL, edgecolor=SURFACE, linewidth=2)
+            if unc >= 2.5:
+                ax.text(x, bottom + unc / 2, "?", ha="center", va="center", color="white", fontsize=8, fontweight="bold")
+            bottom += unc
         ax.text(x, bottom + 0.8, f"{trials[st]['cycle_time_s']['value']:.1f}s", ha="center", va="bottom",
                 color=INK, fontsize=9)
     if target:
@@ -111,9 +117,11 @@ def yamazumi(trials: dict, va: dict[int, bool], target: float | None, out: Path)
     ax.set_ylabel("thời lượng bước cộng dồn (s)")
     ax.grid(axis="y", color="#e4e3df", lw=0.6)
     ax.set_axisbelow(True)
-    ax.legend(handles=legend_handles([("Bước VA", C_VA), ("Bước NVA", C_NVA)]), loc="upper center",
-              bbox_to_anchor=(0.5, -0.07), ncol=2, frameon=False)
-    ax.set_title("Yamazumi — thời lượng từng bước (số = id bước)", loc="left", fontsize=11)
+    items = [("Bước VA", C_VA), ("Bước NVA", C_NVA)]
+    if any(((m.get("unclassified_s") or {}).get("value") or 0) > 0 for m in trials.values()):
+        items.append(("Unclassified (?)", C_UNCL))
+    ax.legend(handles=legend_handles(items), loc="upper center", bbox_to_anchor=(0.5, -0.07), ncol=3, frameon=False)
+    ax.set_title("Yamazumi — thời lượng bước (số = id, ? = chưa gán)", loc="left", fontsize=11)
     fig.tight_layout()
     fig.savefig(out, dpi=110)
     plt.close(fig)
@@ -187,16 +195,24 @@ def md_table(rows: list[dict], cols: list[tuple[str, str]]) -> list[str]:
 
 def main() -> None:
     ap = base_parser(__doc__)
-    ap.add_argument("--metrics", default="outputs/metrics/metrics.json")
-    ap.add_argument("--findings", default="outputs/findings/findings.json")
-    ap.add_argument("--explained", default="outputs/findings/explained.json")
-    ap.add_argument("--steps-dir", default="outputs/steps")
-    ap.add_argument("--events-dir", default="outputs/events")
-    ap.add_argument("--features-dir", default="outputs/features")
+    ap.add_argument("--metrics", default=None, help="mặc định <run>/metrics/metrics.json")
+    ap.add_argument("--findings", default=None, help="mặc định <run>/findings/findings.json")
+    ap.add_argument("--explained", default=None, help="mặc định <run>/explained/explained.json")
+    ap.add_argument("--steps-dir", default=None)
+    ap.add_argument("--events-dir", default=None)
+    ap.add_argument("--features-dir", default=None)
     ap.add_argument("--inspect", default="outputs/inspect_report.md")
-    ap.add_argument("--out", default="outputs/report.md")
+    ap.add_argument("--out", default=None, help="mặc định <run>/report/report.md")
     a = ap.parse_args()
-    out = Path(a.out)
+    ctx = setup(a, TAG)
+    steps_dir = stage_dir(ctx, a.steps_dir, "steps", "outputs/steps")
+    events_dir = stage_dir(ctx, a.events_dir, "events", "outputs/events")
+    features_dir = stage_dir(ctx, a.features_dir, "features", "outputs/features")
+    f_metrics = stage_file(ctx, a.metrics, "metrics", "metrics.json", "outputs/metrics/metrics.json")
+    f_findings = stage_file(ctx, a.findings, "findings", "findings.json", "outputs/findings/findings.json")
+    f_explained = stage_file(ctx, a.explained, "explained", "explained.json", "outputs/findings/explained.json")
+    out = stage_file(ctx, a.out, "report", "report.md", "outputs/report.md")
+    man = ctx.manifest if ctx else {}
     if not can_write(out, a.force, TAG):
         return
     assets = out.parent / "report_assets"
@@ -204,16 +220,18 @@ def main() -> None:
     rel = lambda p: p.relative_to(out.parent).as_posix()  # noqa: E731
 
     cfg = load_config(a.config)
-    metrics = read_json(Path(a.metrics))
+    metrics = read_json(f_metrics)
     trials = {st: m for st, m in metrics["trials"].items() if st in select_stems(list(metrics["trials"]), a.subjects, a.trials)}
-    fdoc = read_json(Path(a.findings)) if Path(a.findings).exists() else {"findings": [], "notes": []}
-    edoc = read_json(Path(a.explained)) if Path(a.explained).exists() else {"explanations": [], "mode": "none"}
+    fdoc = read_json(f_findings) if f_findings.exists() else {"findings": [], "notes": []}
+    edoc = read_json(f_explained) if f_explained.exists() else {"explanations": [], "mode": "none"}
     exps = {e["finding_id"]: e for e in edoc.get("explanations", [])}
     source = metrics["meta"]["source"]
     va = {int(s["id"]): bool(s.get("va", False)) for s in cfg.get("steps", [])}
     pxu = "cm" if cfg.get("px_per_cm") else "px"
 
     md = ["# Báo cáo Kaizen Motion Analyzer — HA4M", "",
+          (f"- Run: `{ctx.run_id}` · pose `{man.get('pose_model')}` · LLM `{(man.get('llm') or {}).get('provider')}`"
+           f" · git `{man.get('git_hash') or '—'}` · manifest: `../manifest.json`" if ctx else "- Run: (đường dẫn phẳng cũ)"),
           f"- Sinh lúc: {dt.datetime.now():%Y-%m-%d %H:%M} · nguồn bước: **{source}** "
           f"({'nhãn HA4M — ground truth' if source == 'oracle' else 'dự đoán từ keypoints'}) · "
           f"{len(trials)} trial · subject: {', '.join(metrics['meta']['subjects'])}",
@@ -236,8 +254,8 @@ def main() -> None:
     md += ["", "_%VA = Σ thời lượng bước va=true / cycle time (phân loại VA theo `station.yaml`, cần kỹ sư IE duyệt)._", ""]
 
     # 2. Eval
-    evals = {st: read_json(Path(a.steps_dir) / f"{st}_eval.json") for st in trials
-             if (Path(a.steps_dir) / f"{st}_eval.json").exists()}
+    evals = {st: read_json(steps_dir / f"{st}_eval.json") for st in trials
+             if (steps_dir / f"{st}_eval.json").exists()}
     if evals:
         md += ["## 2. Độ chính xác phân đoạn bước (predicted vs nhãn HA4M)", ""]
         md += md_table([dict(trial=st, **{k: v for k, v in e.items() if not isinstance(v, (list, dict))})
@@ -259,15 +277,15 @@ def main() -> None:
     for st in trials:
         steps = {}
         for k in ("oracle", "pred"):
-            p = Path(a.steps_dir) / f"{st}_{k}.csv"
+            p = steps_dir / f"{st}_{k}.csv"
             if p.exists():
                 steps[k] = pd.read_csv(p)
-        evp = Path(a.events_dir) / f"{st}.csv"
+        evp = events_dir / f"{st}.csv"
         ev = pd.read_csv(evp) if evp.exists() else None
         png = assets / f"gantt_{st}.png"
         gantt(st, steps, ev, va, png)
         md += [f"![Gantt {st}]({rel(png)})", ""]
-        sp = Path(a.features_dir) / f"{st}_speed.png"
+        sp = features_dir / f"{st}_speed.png"
         if sp.exists():
             link = Path(os.path.relpath(sp.resolve(), out.parent.resolve())).as_posix()
             md += [f"<details><summary>Tốc độ cổ tay {st}</summary>", "", f"![speed {st}]({link})", "", "</details>", ""]
@@ -321,9 +339,13 @@ def main() -> None:
     fs = fdoc.get("findings", [])
     md += ["## 7. Findings (rule-based) + giải thích LLM", ""]
     if edoc.get("pass_rate") is not None:
-        md += [f"**Validator LLM:** {edoc['n_passed']}/{len(edoc['explanations'])} explanation đạt "
-               f"(pass rate {edoc['pass_rate'] * 100:.0f}%) — chế độ `{edoc.get('mode')}`"
-               + (f", model `{edoc.get('llm_model')}`" if edoc.get("llm_model") else "") + ".", ""]
+        line = (f"**Validator LLM:** {edoc['n_passed']}/{edoc['n_findings']} explanation đạt "
+                f"(pass rate {edoc['pass_rate'] * 100:.0f}%")
+        if edoc.get("pass_rate_first_attempt") is not None:
+            line += f"; đạt ngay lần 1: {edoc['pass_rate_first_attempt'] * 100:.0f}%, retry {edoc.get('n_retried', 0)}"
+        line += f") — provider `{edoc.get('provider', edoc.get('mode'))}`"
+        line += (f", model `{edoc.get('llm_model')}`" if edoc.get("llm_model") else "") + "."
+        md += [line, ""]
     for n in fdoc.get("notes", []):
         md.append(f"- _{n}_")
     if fdoc.get("notes"):
@@ -337,23 +359,27 @@ def main() -> None:
         md += [f"### {f['id']} · {f['type']} · rule {f['rule']} · severity **{f['severity']}** · confidence {f['confidence']}", "",
                f"- Bằng chứng: **{e['metric']} = {e['value']} {e['unit']}** · trial {', '.join(e['trials'])}",
                f"- Ảnh hưởng ước tính: {f['impact_s_per_cycle']} s/chu kỳ · điểm xếp hạng {f['rank_score']}"]
-        ctx = {k: v for k, v in e.items() if k not in ("metric", "value", "unit", "trials", "timestamps")}
-        if ctx:
-            md.append(f"- Ngữ cảnh: `{ctx}`")
+        ev_ctx = {k: v for k, v in e.items() if k not in ("metric", "value", "unit", "trials", "timestamps")}
+        if ev_ctx:
+            md.append(f"- Ngữ cảnh: `{ev_ctx}`")
         if e.get("timestamps"):
             md.append(f"- Mốc thời gian (s): {e['timestamps'][:5]}")
         x = exps.get(f["id"])
         if x:
-            v = x["validation"]
-            badge = "✅ passed" if v["status"] == "passed" else (
-                f"❌ failed (citation sai: {v.get('bad_citations')}, số không có trong finding: {v.get('unsupported_numbers')}"
-                + (f", {v['reason']}" if v.get("reason") else "") + ")")
-            md += ["", f"> **Quan sát:** {x.get('observation', '')}  ",
-                   f"> **Giả thuyết:** {x.get('hypothesis', '')}  ",
-                   f"> **Đề xuất:** {x.get('recommendation', '')}  ",
-                   f"> **Trích dẫn:** {', '.join(x.get('citations', [])) or '—'} · **Validator:** {badge}"]
+            status, fin, chk = x.get("validation"), x.get("final", {}), x.get("final_check", {})
+            badge = {"passed": "✅ passed", "failed_after_retry": "❌ failed sau retry",
+                     "parse_failed": "❌ không parse được response", "failed": "❌ failed"}.get(status, str(status))
+            if status == "passed" and len(x.get("attempts", [])) > 1:
+                badge += " (sau retry)"
+            if status != "passed" and chk.get("message"):
+                badge += f" — {chk['message']}"
+            cites = chk.get("citations_normalized") or fin.get("citations") or []
+            md += ["", f"> **Quan sát:** {fin.get('observation', '')}  ",
+                   f"> **Giả thuyết:** {fin.get('hypothesis', '')}  ",
+                   f"> **Đề xuất:** {fin.get('recommendation', '')}  ",
+                   f"> **Trích dẫn:** {', '.join(cites) or '—'} · **Validator:** {badge}"]
         if st not in feats:
-            fp = Path(a.features_dir) / f"{st}.parquet"
+            fp = features_dir / f"{st}.parquet"
             feats[st] = pd.read_parquet(fp) if fp.exists() else None
         if e.get("timestamps"):
             t0, t1 = e["timestamps"][0]
@@ -384,23 +410,30 @@ def main() -> None:
     lim.append("Muri: góc cổ tay **2D** từ camera đặt chéo, chỉ mang tính sàng lọc; tay bị che khuất (thường tay trái) có độ phủ thấp.")
     lim.append("Pose: MediaPipe (2D), 1 người/khung; tay người gán nhãn ở mép trái được loại bằng ROI. Cổ tay bị che → nội suy ≤ 15 frame, dài hơn bỏ qua.")
     for st in trials:
-        kc = out.parent / f"kinect_compare_{st}.json"
+        kc = Path("outputs") / f"kinect_compare_{st}.json"
         if kc.exists():
             k = read_json(kc)
             lim.append(f"Đối chứng Kinect ({st}): lệch cổ tay so với skeleton Azure Kinect — phải: trung vị {k['right']['median_px']}px, "
                        f"P90 {k['right']['p90_px']}px, {k['right']['pct_within_50px']}% frame < 50px; trái: trung vị "
                        f"{k['left']['median_px']}px, P90 {k['left']['p90_px']}px, {k['left']['pct_within_50px']}% < 50px "
                        "→ số liệu tay trái kém tin cậy hơn (hay bị thân che).")
+    no_lab = sorted(st for st, v in man.get("trials", {}).items() if v.get("labels_available") is False)
+    if no_lab:
+        lim.append(f"Không có nhãn (Labels*.txt) cho: {', '.join(no_lab)} — không có oracle/eval cho các trial này"
+                   + ("; chúng KHÔNG có mặt trong report (nguồn bước = oracle)." if source == "oracle"
+                      else "; số liệu của chúng chỉ từ bước dự đoán, không kiểm chứng được."))
     n_sub = len(metrics["meta"]["subjects"])
     if len(trials) < 3:
         lim.append(f"Chỉ có {len(trials)} trial / {n_sub} subject: R1 (bước chậm, median+2·MAD) và R6 (CV cycle time) không chạy được; "
                    "Mura chưa có ý nghĩa thống kê — cần thêm video HA4M.")
     lim.append("%VA phụ thuộc phân loại va trong station.yaml (giả định, cần kỹ sư IE duyệt). Idle không đồng nghĩa lãng phí (KB-16).")
     if edoc.get("mode") == "dry-run":
-        lim.append("Giải thích LLM đang ở chế độ **dry-run** (văn bản giả) — chạy `07_explain.py` với GEMINI_API_KEY để có giải thích thật.")
+        lim.append("Giải thích LLM đang ở chế độ **dry-run** (văn bản giả) — chạy `07_explain.py --provider gemini|anthropic` (cần GEMINI_API_KEY / ANTHROPIC_API_KEY) để có giải thích thật.")
     md += [f"- {x}" for x in lim]
     out.write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"[{TAG}] đã ghi {out} + {len(list(assets.glob('*.png')))} ảnh trong {assets}")
+    if ctx:
+        ctx.record_stage("08_report", report=str(out), n_trials=len(trials))
 
 
 if __name__ == "__main__":

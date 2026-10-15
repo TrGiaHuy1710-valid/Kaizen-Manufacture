@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import base_parser, can_write, load_config, parse_stem, r, read_json, write_json  # noqa: E402
+from common import base_parser, can_write, load_config, parse_stem, r, read_json, setup, stage_dir, stage_file, write_json  # noqa: E402
 
 TAG = "06"
 CONF_W = {"high": 1.0, "med": 0.6, "low": 0.3}
@@ -244,17 +244,19 @@ def run_rules(metrics: dict, cfg: dict, steps_dir: Path, events_dir: Path) -> tu
 
 def main() -> None:
     ap = base_parser(__doc__)
-    ap.add_argument("--metrics", default="outputs/metrics/metrics.json")
-    ap.add_argument("--steps-dir", default="outputs/steps")
-    ap.add_argument("--events-dir", default="outputs/events")
-    ap.add_argument("--out", default="outputs/findings/findings.json")
+    ap.add_argument("--metrics", default=None, help="mặc định <run>/metrics/metrics.json")
+    ap.add_argument("--steps-dir", default=None, help="mặc định <run>/steps")
+    ap.add_argument("--events-dir", default=None, help="mặc định <run>/events")
+    ap.add_argument("--out", default=None, help="mặc định <run>/findings/findings.json")
     a = ap.parse_args()
-    out = Path(a.out)
+    ctx = setup(a, TAG)
+    out = stage_file(ctx, a.out, "findings", "findings.json", "outputs/findings/findings.json")
     if not can_write(out, a.force, TAG):
         return
     cfg = load_config(a.config)
-    metrics = read_json(Path(a.metrics))
-    findings, notes = run_rules(metrics, cfg, Path(a.steps_dir), Path(a.events_dir))
+    metrics = read_json(stage_file(ctx, a.metrics, "metrics", "metrics.json", "outputs/metrics/metrics.json"))
+    findings, notes = run_rules(metrics, cfg, stage_dir(ctx, a.steps_dir, "steps", "outputs/steps"),
+                                stage_dir(ctx, a.events_dir, "events", "outputs/events"))
     write_json(out, {"source": metrics["meta"]["source"], "rank_formula": "impact_s_per_cycle × {high:1, med:0.6, low:0.3}",
                      "notes": notes, "findings": findings})
     for n in notes:
@@ -263,6 +265,8 @@ def main() -> None:
         print(f"[{TAG}] {f['id']} {f['rule']} {f['type']:<18} sev={f['severity']:<4} conf={f['confidence']:<4} "
               f"impact={f['impact_s_per_cycle']}s  {f['evidence']['metric']} = {f['evidence']['value']} {f['evidence']['unit']}")
     print(f"[{TAG}] đã ghi {out} ({len(findings)} finding)")
+    if ctx:
+        ctx.record_stage("06_findings", n_findings=len(findings), rules=sorted({f["rule"] for f in findings}), notes=notes)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import base_parser, can_write, load_config, parse_stem, r, read_json, select_stems, write_json  # noqa: E402
+from common import base_parser, can_write, load_config, parse_stem, r, read_json, select_stems, setup, stage_dir, write_json  # noqa: E402
 
 TAG = "05"
 HANDS = {"left": "lw", "right": "rw"}
@@ -162,32 +162,38 @@ def mura(values: dict[str, float]) -> dict:
 def main() -> None:
     ap = base_parser(__doc__)
     ap.add_argument("--source", choices=["oracle", "pred"], default="oracle")
-    ap.add_argument("--steps-dir", default="outputs/steps")
-    ap.add_argument("--events-dir", default="outputs/events")
-    ap.add_argument("--features-dir", default="outputs/features")
-    ap.add_argument("--out-dir", default="outputs/metrics")
+    ap.add_argument("--steps-dir", default=None, help="mặc định <run>/steps")
+    ap.add_argument("--events-dir", default=None, help="mặc định <run>/events")
+    ap.add_argument("--features-dir", default=None, help="mặc định <run>/features")
+    ap.add_argument("--out-dir", default=None, help="mặc định <run>/metrics")
     a = ap.parse_args()
+    ctx = setup(a, TAG)
+    steps_dir = stage_dir(ctx, a.steps_dir, "steps", "outputs/steps")
+    events_dir = stage_dir(ctx, a.events_dir, "events", "outputs/events")
+    features_dir = stage_dir(ctx, a.features_dir, "features", "outputs/features")
+    out_dir = stage_dir(ctx, a.out_dir, "metrics", "outputs/metrics")
+    out_dir.mkdir(parents=True, exist_ok=True)
     cfg = load_config(a.config)
-    out_dir = Path(a.out_dir)
     out_json = out_dir / "metrics.json"
     if not can_write(out_json, a.force, TAG):
         return
     suf = f"_{a.source}.csv"
-    stems = select_stems([p.name[: -len(suf)] for p in Path(a.steps_dir).glob(f"*{suf}")], a.subjects, a.trials)
+    stems = select_stems([p.name[: -len(suf)] for p in steps_dir.glob(f"*{suf}")], a.subjects, a.trials)
     if not stems:
-        sys.exit(f"[{TAG}] không có steps *{suf} trong {a.steps_dir}")
+        print(f"[{TAG}] không có steps *{suf} trong {steps_dir}", file=sys.stderr)
+        sys.exit(1)
 
     trials, summary = {}, []
     for st in stems:
-        steps = pd.read_csv(Path(a.steps_dir) / f"{st}{suf}")
+        steps = pd.read_csv(steps_dir / f"{st}{suf}")
         if not (steps["step_id"] > 0).any():
             print(f"[{TAG}] {st}: không có bước hợp lệ, bỏ qua")
             continue
-        evp, fp = Path(a.events_dir) / f"{st}.csv", Path(a.features_dir) / f"{st}.parquet"
+        evp, fp = events_dir / f"{st}.csv", features_dir / f"{st}.parquet"
         ev = pd.read_csv(evp) if evp.exists() else None
         feat = pd.read_parquet(fp) if fp.exists() else None
         m, step_df = trial_metrics(st, steps, ev, feat, cfg)
-        evalp = Path(a.steps_dir) / f"{st}_eval.json"
+        evalp = steps_dir / f"{st}_eval.json"
         if evalp.exists():
             e = read_json(evalp)
             m["eval_vs_oracle"] = {k: v for k, v in e.items() if k != "per_step"}
@@ -232,6 +238,9 @@ def main() -> None:
            "trials": trials, "mura": mura_out}
     write_json(out_json, res)
     print(f"[{TAG}] đã ghi {out_json} ({len(trials)} trial)")
+    if ctx:
+        ctx.update_manifest(source=a.source)
+        ctx.record_stage("05_metrics", source=a.source, n_trials=len(trials), trials=list(trials))
 
 
 if __name__ == "__main__":

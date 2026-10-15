@@ -9,7 +9,10 @@ Cấu trúc thật (khác giả định ban đầu trong CLAUDE.md):
         Labels.txt   # mỗi dòng 1 frame: "<frame_idx> <action_id> <repetition>" (cách nhau dấu cách, CRLF)
                      # action_id 0 = "don't care"; repetition ≠ 0 chỉ ở action 2, 3, 11
 
-`root` có thể là thư mục chứa nhiều IDU*V* hoặc chính 1 thư mục IDU*V*.
+`root` có thể là thư mục chứa nhiều IDU*V*, chính 1 thư mục IDU*V*, hoặc nhiều thư mục cách nhau dấu phẩy.
+Quét phòng thủ (folder data mới có thể lệch nhẹ): mọi thư mục (độ sâu ≤ 2) có con `Color*` (không phân biệt
+hoa thường, bỏ ColorAligned) là 1 video; tên IDU001V001 / U001_V001 / U001/V001 / U001 (→ V001) đều nhận;
+nhãn là Labels*.txt (glob, không phân biệt hoa thường) — thiếu nhãn vẫn trích keypoints được.
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-VIDEO_DIR_RE = re.compile(r"^ID(U\d+)(V\d+)$")
+VIDEO_DIR_RE = re.compile(r"^ID(U\d+)(V\d+)$", re.I)
 FRAME_RE = re.compile(r"FrameID(\d+)_DeviceTimeStamp(\d+)us", re.I)
 IMG_EXT = (".png", ".jpg", ".jpeg", ".bmp")
 DEFAULT_ROOT = os.environ.get("HA4M_ROOT", "data/ha4m")
@@ -45,47 +48,110 @@ ACTION_NAMES = {
 }
 
 
-def _video_dirs(root: str | Path) -> list[Path]:
-    root = Path(root)
-    if VIDEO_DIR_RE.match(root.name):
-        return [root]
-    if not root.exists():
-        return []
-    return sorted(p for p in root.iterdir() if p.is_dir() and VIDEO_DIR_RE.match(p.name))
+def roots_of(root: str | Path) -> list[Path]:
+    """--data-root có thể là nhiều thư mục cách nhau dấu phẩy."""
+    return [Path(x.strip()) for x in str(root).split(",") if x.strip()]
+
+
+def _find_child(d: Path, name: str) -> Path | None:
+    """Thư mục con tên `name` không phân biệt hoa thường; fallback tiền tố (bỏ *Aligned*)."""
+    if not d.is_dir():
+        return None
+    kids = [p for p in d.iterdir() if p.is_dir()]
+    low = name.lower()
+    exact = [p for p in kids if p.name.lower() == low]
+    if exact:
+        return exact[0]
+    pref = sorted(p for p in kids if p.name.lower().startswith(low) and "aligned" not in p.name.lower())
+    return pref[0] if pref else None
+
+
+def _ids_for(d: Path) -> tuple[str, str]:
+    """(subject, trial) từ tên thư mục video, chấp nhận nhiều kiểu đặt tên lệch nhẹ."""
+    n = d.name
+    m = VIDEO_DIR_RE.match(n) or re.match(r"^(?:ID)?(U\d+)[_\-\s]*(V\d+)$", n, re.I)
+    if m:
+        return m.group(1).upper(), m.group(2).upper()
+    mp = re.match(r"^(?:ID)?(U\d+)$", d.parent.name, re.I)
+    if mp and re.match(r"^V\d+$", n, re.I):
+        return mp.group(1).upper(), n.upper()
+    m = re.match(r"^(?:ID)?(U\d+)$", n, re.I)
+    if m:
+        return m.group(1).upper(), "V001"
+    return re.sub(r"[^A-Za-z0-9]", "", n) or "S", "V001"
+
+
+def _scan(root: str) -> dict[tuple[str, str], Path]:
+    """Quét (độ sâu ≤ 2) mọi thư mục có con 'Color*' → {(subject, trial): video_dir}."""
+    found: dict[tuple[str, str], Path] = {}
+    for r in roots_of(root):
+        if not r.exists():
+            continue
+        cands = [r] if _find_child(r, "Color") else []
+        if not cands:
+            for c in sorted(p for p in r.iterdir() if p.is_dir()):
+                if _find_child(c, "Color"):
+                    cands.append(c)
+                else:
+                    cands += [g for g in sorted(p for p in c.iterdir() if p.is_dir()) if _find_child(g, "Color")]
+        for d in cands:
+            key = _ids_for(d)
+            if key in found and found[key].resolve() != d.resolve():
+                print(f"[io] cảnh báo: trùng {key[0]}_{key[1]} ở {found[key]} và {d} — giữ cái đầu")
+                continue
+            found.setdefault(key, d)
+    return found
+
+
+_SCAN_CACHE: dict[str, dict] = {}
+
+
+def _videos(root: str | Path) -> dict[tuple[str, str], Path]:
+    k = str(root)
+    if k not in _SCAN_CACHE:
+        _SCAN_CACHE[k] = _scan(k)
+    return _SCAN_CACHE[k]
 
 
 def video_dir(root: str | Path, subject: str, trial: str) -> Path:
     """Thư mục của 1 video (subject='U001', trial='V001')."""
-    for d in _video_dirs(root):
-        if d.name == f"ID{subject}{trial}":
-            return d
-    raise FileNotFoundError(f"Không thấy ID{subject}{trial} trong {root}")
+    d = _videos(root).get((subject, trial))
+    if d is None:
+        raise FileNotFoundError(f"Không thấy video {subject}_{trial} trong {root}")
+    return d
 
 
 def list_trials(root: str | Path = DEFAULT_ROOT) -> list[tuple[str, str]]:
-    """[(subject, trial)] cho mọi thư mục IDU*V* trong root."""
-    out = []
-    for d in _video_dirs(root):
-        m = VIDEO_DIR_RE.match(d.name)
-        out.append((m.group(1), m.group(2)))
-    return out
+    """[(subject, trial)] cho mọi video tìm được trong root (1 hoặc nhiều thư mục, cách nhau dấu phẩy)."""
+    return sorted(_videos(root))
 
 
 def modality_dir(root: str | Path, subject: str, trial: str, modality: str = "Color") -> Path:
-    """Color/<camera_serial>/ — tự lấy thư mục con duy nhất (serial camera)."""
-    base = video_dir(root, subject, trial) / modality
+    """<Modality>/<camera_serial>/ — tên modality không phân biệt hoa thường; tự lấy thư mục con (serial camera)."""
+    vd = video_dir(root, subject, trial)
+    base = _find_child(vd, modality)
+    if base is None:
+        raise FileNotFoundError(f"{vd} không có thư mục {modality}*")
     subs = sorted(p for p in base.iterdir() if p.is_dir())
     return subs[0] if subs else base
 
 
 def frame_files(root: str | Path, subject: str, trial: str, modality: str = "Color") -> list[tuple[int, int, Path]]:
-    """[(frame_idx, device_timestamp_us, path)] sort theo SỐ frame (bỏ Thumbs.db v.v.)."""
+    """[(frame_idx, device_timestamp_us | -1, path)] sort theo SỐ frame (bỏ Thumbs.db v.v.).
+    Tên chuẩn FrameID######_DeviceTimeStamp…us; tên khác → lấy số cuối trong tên làm frame_idx, timestamp = -1."""
     d = modality_dir(root, subject, trial, modality)
+    want_img = modality.lower() != "skeletons"
     out = []
     for p in d.iterdir():
+        if not p.is_file() or (want_img and p.suffix.lower() not in IMG_EXT):
+            continue
         m = FRAME_RE.search(p.name)
-        if m and (p.suffix.lower() in IMG_EXT or modality == "Skeletons"):
+        if m:
             out.append((int(m.group(1)), int(m.group(2)), p))
+        elif want_img or p.suffix.lower() == ".txt":
+            nums = re.findall(r"\d+", p.stem)
+            if nums:
+                out.append((int(nums[-1]), -1, p))
     out.sort(key=lambda x: x[0])
     return out
 
@@ -145,9 +211,19 @@ def read_frame(root: str | Path, subject: str, trial: str, frame_idx: int) -> np
     return None
 
 
+def labels_path(root: str | Path, subject: str, trial: str) -> Path | None:
+    """File nhãn của video: Labels*.txt (không phân biệt hoa thường); None nếu không có."""
+    vd = video_dir(root, subject, trial)
+    cands = sorted(p for p in vd.iterdir() if p.is_file() and p.suffix.lower() == ".txt"
+                   and p.name.lower().startswith("label"))
+    return cands[0] if cands else None
+
+
 def load_frame_labels(root: str | Path, subject: str, trial: str) -> pd.DataFrame:
-    """Labels.txt thô: DataFrame[frame, action_id, repetition] (1 dòng / frame)."""
-    p = video_dir(root, subject, trial) / "Labels.txt"
+    """Labels.txt thô: DataFrame[frame, action_id, repetition] (1 dòng / frame). FileNotFoundError nếu thiếu."""
+    p = labels_path(root, subject, trial)
+    if p is None:
+        raise FileNotFoundError(f"không có Labels*.txt cho {subject}_{trial}")
     df = pd.read_csv(p, sep=r"\s+", header=None, names=["frame", "action_id", "repetition"],
                      engine="python")
     return df.astype(int).sort_values("frame").reset_index(drop=True)

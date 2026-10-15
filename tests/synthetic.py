@@ -3,7 +3,8 @@
 Sinh trong thư mục tạm: cấu trúc HA4M giả (IDU900V001..V004, IDU901V001) với Labels.txt, vài ảnh Color,
 1 file Skeleton; keypoints .npz hình sin theo nhãn (tay phải đi tới khay của bước → dừng → về vùng lắp).
 Cài sẵn bất thường: V002 bước 10 chậm gấp 3 (R1), V003 lấy dư 1 lần ở khay bước 4 (R2),
-V004 tay phải đứng yên ngoài zone 45s (R3, và CV cycle time > 0.25 → R6). Chạy 00, 02→08 (07 --dry-run) bằng subprocess rồi assert.
+V004 tay phải đứng yên ngoài zone 45s (R3, và CV cycle time > 0.25 → R6). U902 không có Labels.txt (phải bỏ qua oracle/eval, không crash).
+Chạy 00, 02→08 ở chế độ cũ (đường dẫn phẳng) rồi 2 run (oracle, pred) trong outputs/runs/, compare_runs, assert.
 
     python tests/synthetic.py            # in OK/FAIL, exit code ≠ 0 nếu lỗi
     python tests/synthetic.py --keep     # giữ thư mục tạm để xem report
@@ -151,29 +152,60 @@ def main() -> int:
     for tri, var in (("V001", "normal"), ("V002", "slow"), ("V003", "extra_pick"), ("V004", "idle")):
         make_trial(root, kp, "U900", tri, var, rng)
     make_trial(root, kp, "U901", "V001", "normal", rng)
+    make_trial(root, kp, "U902", "V001", "normal", rng)
+    (root / "IDU902V001" / "Labels.txt").unlink()          # subject thiếu nhãn → oracle/eval bỏ qua, không crash
 
     S = lambda n: str(REPO / "src" / n)  # noqa: E731
     dr = ["--data-root", str(root)]
-    run(tmp, S("00_inspect.py"), *dr)
-    run(tmp, S("02_features.py"), *dr)
-    run(tmp, S("03_events.py"), *dr, "--print-timeline")
-    run(tmp, S("04_steps.py"), *dr, "--oracle")
-    run(tmp, S("04_steps.py"), *dr)
-    run(tmp, S("05_metrics.py"), *dr, "--source", "oracle")
-    run(tmp, S("06_findings.py"))
-    run(tmp, S("07_explain.py"), "--dry-run")
-    run(tmp, S("08_report.py"), *dr)
-
     checks = []
     ok = lambda name, cond: checks.append((name, bool(cond)))  # noqa: E731
-    out = tmp / "outputs"
-    ok("inspect report", (out / "inspect_report.md").exists())
-    for st in ("U900_V001", "U900_V002", "U900_V003", "U900_V004", "U901_V001"):
+
+    # A) Chế độ cũ (chưa có outputs/runs/) → đường dẫn phẳng outputs/<stage>/
+    run(tmp, S("00_inspect.py"), *dr)
+    for args in (["02_features.py"], ["03_events.py"], ["04_steps.py", "--oracle"], ["04_steps.py"],
+                 ["05_metrics.py", "--source", "oracle"], ["06_findings.py"], ["07_explain.py", "--dry-run"],
+                 ["08_report.py"]):
+        run(tmp, S(args[0]), *dr, *args[1:])
+    ok("legacy: outputs/report.md (không có runs/)", (tmp / "outputs" / "report.md").exists())
+    insp = (tmp / "outputs" / "inspect_report.md").read_text()
+    ok("inspect liệt kê video thiếu nhãn", "U902_V001" in insp)
+
+    # B) Chế độ run: 2 run (oracle, pred) không ghi đè nhau
+    def pipeline(source: str) -> str:
+        rid = run(tmp, S("run_io.py"), "new", "--source", source, "--pose", "mediapipe", "--llm", "dry-run",
+                  *dr, "--tag", "synth").strip()
+        R = ["--run", rid]
+        run(tmp, S("02_features.py"), *R)
+        run(tmp, S("03_events.py"), *R, "--print-timeline")
+        run(tmp, S("04_steps.py"), *R, "--oracle")
+        run(tmp, S("04_steps.py"), *R)
+        run(tmp, S("05_metrics.py"), *R, "--source", source)
+        run(tmp, S("06_findings.py"), *R)
+        run(tmp, S("07_explain.py"), *R, "--provider", "dry-run")
+        run(tmp, S("08_report.py"), *R)
+        return rid
+
+    rid_o = pipeline("oracle")
+    rid_p = pipeline("pred")
+    out = tmp / "outputs" / "runs" / rid_o
+    outp = tmp / "outputs" / "runs" / rid_p
+    ok("2 run riêng", rid_o != rid_p and out.is_dir() and outp.is_dir())
+    ok("LATEST = run pred", (tmp / "outputs" / "runs" / "LATEST").read_text().strip() == rid_p)
+    for st in ("U900_V001", "U900_V002", "U900_V003", "U900_V004", "U901_V001", "U902_V001"):
         ok(f"features {st}", (out / "features" / f"{st}.parquet").exists())
         ok(f"events {st}", (out / "events" / f"{st}.csv").exists())
+    man = json.loads((out / "manifest.json").read_text())
+    ok("manifest: U902 labels_available=false", man["trials"]["U902_V001"].get("labels_available") is False)
+    ok("manifest: snapshot station.yaml", (out / "station.yaml").exists() and man["config"]["station"])
+    ok("oracle bỏ qua U902 (không crash)", not (out / "steps" / "U902_V001_oracle.csv").exists())
     ev = json.loads((out / "steps" / "U900_V001_eval.json").read_text())
     ok(f"predicted F1@0.5 ≥ 0.5 (={ev['f1_iou05']})", ev["f1_iou05"] >= 0.5)
     ok(f"cycle time err < 2s (={ev['cycle_time_err_s']})", abs(ev["cycle_time_err_s"]) < 2)
+    met = json.loads((out / "metrics" / "metrics.json").read_text())
+    cv = met["mura"]["within_subject"]["U900"]["cycle_time"]["cv"]
+    ok(f"Mura: CV cycle time U900 có số (={cv})", cv is not None)
+    metp = json.loads((outp / "metrics" / "metrics.json").read_text())
+    ok("pred run gồm cả U902 (không nhãn)", "U902_V001" in metp["trials"])
     fd = json.loads((out / "findings" / "findings.json").read_text())
     rules = {(f["rule"], tuple(f["evidence"]["trials"])) for f in fd["findings"]}
     ok("R1 bước chậm ở V002", any(r == "R1" and "U900_V002" in t for r, t in rules))
@@ -183,9 +215,15 @@ def main() -> int:
     ok("không có R3 ở V001", not any(r == "R3" and "U900_V001" in t for r, t in rules))
     scores = [f["rank_score"] for f in fd["findings"]]
     ok("findings xếp hạng giảm dần", scores == sorted(scores, reverse=True))
-    ex = json.loads((out / "findings" / "explained.json").read_text())
+    ex = json.loads((out / "explained" / "explained.json").read_text())
     ok(f"dry-run pass rate = 1 (={ex['pass_rate']})", ex["pass_rate"] == 1.0)
-    ok("report.md", (out / "report.md").exists() and "Giả định & giới hạn" in (out / "report.md").read_text())
+    rep = (out / "report" / "report.md").read_text()
+    ok("report.md trong run", "Giả định & giới hạn" in rep and rid_o in rep)
+    ok("report ghi trial không có nhãn", "U902_V001" in rep)
+    ok("Yamazumi + assets", (out / "report" / "report_assets" / "yamazumi.png").exists())
+    cmp_out = run(tmp, str(REPO / "src" / "tools" / "compare_runs.py"), rid_o, rid_p)
+    lst = run(tmp, str(REPO / "src" / "tools" / "compare_runs.py"), "--list")
+    ok("compare_runs so sánh + list", rid_o in cmp_out and rid_p in cmp_out and rid_o in lst and rid_p in lst)
 
     # Validator phải bắt số bịa và citation bịa
     m7 = importlib.import_module("07_explain")
@@ -196,7 +234,7 @@ def main() -> int:
     ok("validator pass câu đúng", m7.validate(good, f0, ids)["status"] == "passed")
     v = m7.validate(bad, f0, ids)
     ok("validator bắt số bịa + citation bịa", v["status"] == "failed" and v["bad_citations"] == ["KB-77"]
-       and "999.9" in v["unsupported_numbers"])
+       and "999.9" in v["unknown_numbers"])
 
     width = max(len(n) for n, _ in checks)
     for n, c in checks:

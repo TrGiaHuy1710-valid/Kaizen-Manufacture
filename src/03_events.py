@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import base_parser, can_write, load_config, parse_stem, select_stems  # noqa: E402
+from common import base_parser, can_write, load_config, parse_stem, select_stems, setup, stage_dir  # noqa: E402
 import ha4m_io  # noqa: E402
 
 TAG = "03"
@@ -155,18 +155,22 @@ def ascii_timeline(ev: pd.DataFrame, t_end: float, width: int = 80, oracle: pd.D
 
 def main() -> None:
     ap = base_parser(__doc__)
-    ap.add_argument("--in-dir", default="outputs/features")
-    ap.add_argument("--out-dir", default="outputs/events")
+    ap.add_argument("--in-dir", default=None, help="mặc định <run>/features")
+    ap.add_argument("--out-dir", default=None, help="mặc định <run>/events")
     ap.add_argument("--print-timeline", action="store_true")
     a = ap.parse_args()
+    ctx = setup(a, TAG)
+    in_dir = stage_dir(ctx, a.in_dir, "features", "outputs/features")
+    out_dir = stage_dir(ctx, a.out_dir, "events", "outputs/events")
     cfg = load_config(a.config)
-    stems = select_stems([p.stem for p in Path(a.in_dir).glob("*.parquet")], a.subjects, a.trials)
+    stems = select_stems([p.stem for p in in_dir.glob("*.parquet")], a.subjects, a.trials)
     if not stems:
-        sys.exit(f"[{TAG}] không có features trong {a.in_dir}")
+        print(f"[{TAG}] không có features trong {in_dir}", file=sys.stderr)
+        sys.exit(1)
     for st in stems:
-        out = Path(a.out_dir) / f"{st}.csv"
+        out = out_dir / f"{st}.csv"
         if can_write(out, a.force, TAG):
-            df = pd.read_parquet(Path(a.in_dir) / f"{st}.parquet")
+            df = pd.read_parquet(in_dir / f"{st}.parquet")
             ev = build_events(df, cfg)
             ev.to_csv(out, index=False)
             cnt = ev.groupby(["hand", "event_type"]).size().unstack(fill_value=0)
@@ -183,6 +187,8 @@ def main() -> None:
             except Exception:
                 pass
             print(ascii_timeline(ev, float(ev["end_s"].max()), 80, oracle))
+    if ctx:
+        ctx.record_stage("03_events", n_trials=len(stems))
 
 
 if __name__ == "__main__":

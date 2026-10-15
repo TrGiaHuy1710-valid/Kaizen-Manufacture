@@ -64,7 +64,7 @@ config/station.yaml  config/sop.md  config/kaizen_kb.md
 src/00_inspect.py → src/01_extract (wrapper gọi extract_keypoints cho N trial)
 → src/02_features.py → src/03_events.py → src/04_steps.py → src/05_metrics.py
 → src/06_findings.py → src/07_explain.py → src/08_report.py
-run_all.sh [--oracle] [--subjects S1,S2] [--trials ...] [--model mediapipe|rtmw]
+run_all.sh [--oracle] [--subjects S1,S2|all] [--trials ...|all] [--model mediapipe|rtmw] [--provider ...] [--tag ...]
 ```
 
 ### 02_features.py — keypoints → features.parquet
@@ -143,18 +143,27 @@ Xếp hạng: `impact_s_per_cycle × {high:1, med:0.6, low:0.3}` giảm dần.
 
 ### 07_explain.py — findings + KB → explained.json
 - Đọc `config/kaizen_kb.md` và `config/sop.md`: các đoạn đánh dấu `[KB-xx]` / `[SOP-xx]`.
-- Gọi LLM qua Gemini API (lib `google-genai`, model mặc định `gemini-3.8-flash`, env `GEMINI_API_KEY`;
-  thêm cờ `--dry-run` sinh explanation giả để test luồng không cần key/mạng).
+- Đa provider qua 1 interface (`src/llm_providers.py`): `--provider anthropic|gemini|dry-run`
+  (mặc định env `LLM_PROVIDER`, không có thì gemini). anthropic: `claude-sonnet-4-6`, env `ANTHROPIC_API_KEY`;
+  gemini: SDK `google-genai`, model `--llm-model` / env `GEMINI_MODEL` / mặc định `gemini-3.8-flash`, env `GEMINI_API_KEY`;
+  dry-run sinh explanation giả để test luồng không cần key/mạng.
+- Parse lượng thứ (`src/llm_validate.py`): bỏ code fence/lời dẫn, bọc object đơn, key thiếu → chuỗi rỗng +
+  `format_warning`; không parse được → hỏi lại 1 lần "chỉ JSON array"; vẫn hỏng → `validation: parse_failed`
+  (pipeline không dừng).
 - Prompt: toàn bộ KB + findings JSON. Yêu cầu trả JSON THUẦN:
   `[{finding_id, observation, hypothesis, recommendation, citations: ["KB-03", ...]}]`.
   Ghi rõ trong prompt: observation chỉ được dùng số có trong findings; không được tạo số mới.
-- VALIDATOR (bắt buộc, chạy bằng code sau khi nhận response):
-  a) mọi citation tồn tại trong KB/SOP; b) mọi số thực/nguyên trong observation+hypothesis
-  (regex các token số, bỏ qua số trong citation id) phải xuất hiện trong findings.json của finding đó
-  (so khớp sau khi làm tròn 1 chữ số thập phân).
-  Finding fail → đánh dấu `validation: failed`, giữ lại để báo cáo tỷ lệ pass (đây là metric cho slide).
+- VALIDATOR (bắt buộc, chạy bằng code sau khi nhận response — `src/llm_validate.py`):
+  a) citation chuẩn hoá (`KB13`/`kb-13`/`[KB-13]` → `KB-13`) phải tồn tại trong KB/SOP;
+  b) mọi token số trong observation+hypothesis+recommendation phải thuộc WHITELIST của finding: giá trị số
+  (làm tròn 0 và 1 chữ số, cả |x|), số trong tên trường/chuỗi (`dev_p90_deg` → 90, "lệch > 30°" → 30,
+  `U001_V001` → 1), số phổ quát 0/1/2/3/100, số bước 1–12. Số dính chữ phía trước (P90, U001, F01) không tính.
+  Thông báo lỗi chỉ liệt kê phần sai thật (`số lạ: ['8.2']`, `citation không tồn tại: ['KB-99']`).
+- Fail → gọi lại 1 lần kèm thông báo lỗi validator. explained.json lưu `{attempts, final, validation:
+  passed|failed_after_retry|parse_failed}`; báo `pass_rate` (sau retry) và `pass_rate_first_attempt` (metric cho slide).
+- Test: `python -m pytest tests/test_validator.py` (không gọi mạng).
 
-### 08_report.py — tất cả → outputs/report.md (+ ảnh PNG)
+### 08_report.py — tất cả → <run>/report/report.md (+ ảnh PNG)
 - Bảng tổng: cycle time từng trial, %VA, idle, pick count, (nếu có) sai số vs oracle.
 - Gantt timeline từng trial (matplotlib broken_barh, màu theo bước) → PNG.
 - Yamazumi: bar chồng dur các bước theo trial, kẻ ngang cycle_time_target nếu có → PNG.
@@ -165,8 +174,50 @@ Xếp hạng: `impact_s_per_cycle × {high:1, med:0.6, low:0.3}` giảm dần.
   Muri 2D...).
 
 ## run_all.sh
-Chạy 00→08 theo thứ tự, dừng khi lỗi (`set -e`), nhận `--oracle`, `--model`, `--subjects`, `--trials`,
-`--dry-run` (truyền xuống 07). In thời gian từng bước.
+Chạy 00→08 theo thứ tự vào MỘT run mới, dừng khi lỗi (`set -e`). Cờ: `--oracle`, `--model`, `--subjects`,
+`--trials` (`all` = tất cả), `--data-root a,b`, `--provider anthropic|gemini|dry-run`, `--llm-model`, `--dry-run`,
+`--tag <text>` (nối vào run_id), `--run <id>` (ghi vào run có sẵn), `--force` (chạy lại 00/01). In thời gian từng bước
+và đường dẫn report cuối.
+
+## Output layout (theo run — `src/run_io.py`)
+Mỗi lần chạy ra một thư mục riêng, không ghi đè run cũ:
+```
+outputs/
+├── inspect_report.md                      # 00 — schema dữ liệu thật (không thuộc run)
+├── kinect_compare_<stem>.json             # tools/compare_kinect.py
+└── runs/
+    ├── LATEST                             # file text: run_id gần nhất (không dùng symlink → chạy được Windows)
+    └── <YYYYmmdd-HHMMSS>_<pred|oracle>_<posemodel>_<anthropic|gemini|dry>[_<tag>]/   # trùng → -2, -3
+        ├── manifest.json                  # thời điểm, git hash, lệnh gốc, data_root, lựa chọn subject/trial,
+        │                                  # pose meta + labels_available từng trial, provider/model LLM, argv từng stage
+        ├── station.yaml                   # bản chụp config dùng cho run (02→08 đọc bản này nếu không truyền --config)
+        ├── features/ events/ steps/ metrics/ findings/ explained/
+        └── report/report.md + report/report_assets/*.png
+data/keypoints/<stem>_<model>.npz          # KHÔNG thuộc run — tái dùng giữa các run; manifest.json ghi detect_rate, nhãn
+```
+- Mọi script 02→08 nhận `--run <run_id|latest>` (mặc định latest). Chưa có `outputs/runs/` → cảnh báo và dùng
+  đường dẫn phẳng cũ `outputs/<stage>/` (tương thích ngược). Các cờ `--*-dir/--out` tường minh vẫn thắng.
+- Tạo run thủ công: `python src/run_io.py new --source pred --pose mediapipe --llm gemini --tag demo` (in run_id).
+- So sánh: `python src/tools/compare_runs.py --list` · `python src/tools/compare_runs.py <run1> <run2>` ·
+  `python src/tools/compare_runs.py --last 2` → bảng Markdown cycle time, %VA, idle, F1@IoU0.5, MAE, pass rate LLM.
+
+## UI demo (`app/`, Streamlit)
+- `streamlit run app/ui.py`: dashboard 8 tab (Tổng quan · Video & Timeline · So sánh video · Muda · Mura & Muri ·
+  Findings & Copilot · So sánh run · Chạy pipeline). Deep link: `?run=<run_id>&trial=<trial>`.
+- So sánh video (`app/video_compare.py`): 2 video overlay cạnh nhau, phát/tua/tốc độ chung, "Nhảy tới bước" đưa mỗi
+  video tới đầu bước theo mốc của chính trial (mặc định căn theo nhãn oracle), khoá đồng bộ giữ độ lệch B − A;
+  bên nào thiếu bước → báo và tắt khoá. UI CHỈ ĐỌC artifact của run qua `app/data_access.py` (cache theo mtime) — không tính
+  lại chỉ số; artifact thiếu → cảnh báo, không crash. Màu bước dùng chung `src/overlay.step_color` (Gantt, Yamazumi, video).
+- Video overlay: `python src/tools/render_demo.py --run <id|latest> --trial U001_V001` → `<run>/report/demo_<trial>.mp4`
+  (H.264 + faststart qua imageio-ffmpeg; mp4v của OpenCV KHÔNG phát được trên trình duyệt).
+- So sánh run dùng chung hàm `compare_runs.compare()` với CLI.
+
+## Nạp dữ liệu mới (batch)
+- `python src/01_extract.py --data-root data/ha4m_new --subjects all [--trials all] [--limit N] [--force]`:
+  quét phòng thủ (thư mục có `Color*` ở độ sâu ≤ 2; tên `IDU001V001` / `U001_V001` / `U001/V001` / `U001`→V001;
+  `Labels*.txt` không phân biệt hoa thường), bỏ qua trial đã có .npz, in bảng tiến độ + trial detect_rate < 0.85,
+  gợi ý lệnh run_all tiếp theo. Thiếu nhãn → vẫn trích, `labels_available=false`, 04 oracle/eval bỏ qua kèm cảnh báo.
+- Nhiều nguồn cùng lúc: `bash run_all.sh --data-root data/ha4m,data/ha4m_new ...` (02 chỉ lấy .npz thuộc data_root).
 
 ## Thứ tự thực hiện cho Claude Code (QUAN TRỌNG)
 1. `00_inspect.py` + `ha4m_io.py` — chốt schema thật từ dữ liệu. Mọi thứ sau phụ thuộc bước này.
@@ -179,7 +230,7 @@ Chạy 00→08 theo thứ tự, dừng khi lỗi (`set -e`), nhận `--oracle`, 
 
 ## Quy ước code
 - Python 3.10+, chỉ dùng lib trong requirements.txt sẵn có (numpy<2, pandas, scipy, shapely,
-  OneEuroFilter, matplotlib, opencv qua mediapipe, google-genai — đã thêm `google-genai` vào requirements).
+  OneEuroFilter, matplotlib, opencv qua mediapipe, anthropic, google-genai; pytest cho tests).
 - Type hint + docstring ngắn cho hàm public. Không class nếu hàm đủ. Log bằng print có prefix `[02]`...
 - Mọi script: chạy được từ repo root, tạo thư mục output nếu chưa có, không ghi đè im lặng
   (thêm `--force`).

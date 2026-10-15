@@ -11,6 +11,7 @@ Xử lý cổ tay: score < score_min → NaN; điểm gai (nhảy vào và ra > 
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -18,7 +19,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import base_parser, can_write, load_config, select_stems  # noqa: E402
+from common import base_parser, can_write, load_config, select_stems, setup, stage_dir, stem  # noqa: E402
+import ha4m_io  # noqa: E402
 
 TAG = "02"
 WRISTS = {"lw": "l_wrist", "rw": "r_wrist"}
@@ -173,21 +175,34 @@ def main() -> None:
     ap = base_parser(__doc__)
     ap.add_argument("--model", default="mediapipe")
     ap.add_argument("--kp-dir", default="data/keypoints")
-    ap.add_argument("--out-dir", default="outputs/features")
+    ap.add_argument("--out-dir", default=None, help="mặc định <run>/features")
+    ap.add_argument("--any-root", action="store_true",
+                    help="xử lý mọi .npz trong --kp-dir, kể cả trial không thuộc --data-root")
     a = ap.parse_args()
+    ctx = setup(a, TAG)
+    out_dir = stage_dir(ctx, a.out_dir, "features", "outputs/features")
     cfg = load_config(a.config)
     suffix = f"_{a.model}.npz"
-    stems = select_stems([p.name[: -len(suffix)] for p in Path(a.kp_dir).glob(f"*{suffix}")
-                          if p.name.count("_") >= 2], a.subjects, a.trials)
+    stems = [p.name[: -len(suffix)] for p in Path(a.kp_dir).glob(f"*{suffix}") if p.name.count("_") >= 2]
+    in_root = {stem(s, t) for s, t in ha4m_io.list_trials(a.data_root)}
+    if in_root and not a.any_root:
+        skipped = sorted(set(stems) - in_root)
+        stems = [s for s in stems if s in in_root]
+        if skipped:
+            print(f"[{TAG}] bỏ qua {len(skipped)} .npz không thuộc data_root {a.data_root}: {skipped[:5]}"
+                  f"{' ...' if len(skipped) > 5 else ''} (--any-root để lấy hết)")
+    stems = select_stems(stems, a.subjects, a.trials)
     if not stems:
-        sys.exit(f"[{TAG}] không có file *{suffix} trong {a.kp_dir}")
+        print(f"[{TAG}] không có file *{suffix} nào khớp trong {a.kp_dir}", file=sys.stderr)
+        sys.exit(1)
+    done = {}
     for st in stems:
-        out = Path(a.out_dir) / f"{st}.parquet"
+        out = out_dir / f"{st}.parquet"
         if not can_write(out, a.force, TAG):
             continue
         df, stats = build_features(Path(a.kp_dir) / f"{st}{suffix}", cfg)
         df.to_parquet(out, index=False)
-        plot_speed(df, Path(a.out_dir) / f"{st}_speed.png", cfg["moving_speed_px_s"], f"{st} — tốc độ cổ tay")
+        plot_speed(df, out_dir / f"{st}_speed.png", cfg["moving_speed_px_s"], f"{st} — tốc độ cổ tay")
         for p in WRISTS:
             v = stats[f"{p}_valid"] * 100
             warn = "  ⚠ CẢNH BÁO < 85%" if v < 85 else ""
@@ -196,6 +211,13 @@ def main() -> None:
         zc = pd.concat([df["lw_zone"], df["rw_zone"]]).value_counts()
         print(f"[{TAG}] {st}: {len(df)} frame, nội suy {df['interp'].mean() * 100:.1f}%, zone (frame·tay): {zc.to_dict()}")
         print(f"[{TAG}] đã ghi {out}")
+        meta = json.loads(stats["model_meta"]) if stats["model_meta"].startswith("{") else {}
+        done[st] = {"keypoints": str(Path(a.kp_dir) / f"{st}{suffix}"), "n_frames": len(df),
+                    "pose_meta": {k: meta.get(k) for k in ("model", "proc_fps", "detect_rate", "roi", "hand_crop")},
+                    "valid_left_pct": round(stats["lw_valid"] * 100, 1), "valid_right_pct": round(stats["rw_valid"] * 100, 1)}
+    if ctx:
+        ctx.set_trials(**done)
+        ctx.record_stage("02_features", n_trials=len(done), model=a.model)
 
 
 if __name__ == "__main__":

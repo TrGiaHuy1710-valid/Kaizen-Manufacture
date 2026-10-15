@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import base_parser, can_write, load_config, parse_stem, r, select_stems, stem, write_json  # noqa: E402
+from common import base_parser, can_write, load_config, parse_stem, r, select_stems, setup, stage_dir, stem, write_json  # noqa: E402
 import ha4m_io  # noqa: E402
 
 TAG = "04"
@@ -156,31 +156,47 @@ def evaluate(pred: pd.DataFrame, orc: pd.DataFrame) -> dict:
 def main() -> None:
     ap = base_parser(__doc__)
     ap.add_argument("--oracle", action="store_true", help="xuất bước từ nhãn HA4M")
-    ap.add_argument("--events-dir", default="outputs/events")
-    ap.add_argument("--out-dir", default="outputs/steps")
+    ap.add_argument("--events-dir", default=None, help="mặc định <run>/events")
+    ap.add_argument("--out-dir", default=None, help="mặc định <run>/steps")
     a = ap.parse_args()
+    ctx = setup(a, TAG)
+    events_dir = stage_dir(ctx, a.events_dir, "events", "outputs/events")
+    out_dir = stage_dir(ctx, a.out_dir, "steps", "outputs/steps")
     cfg = load_config(a.config)
-    out_dir = Path(a.out_dir)
 
     if a.oracle:
         stems = select_stems([stem(s, t) for s, t in ha4m_io.list_trials(a.data_root)], a.subjects, a.trials)
+        labels, n_ok = {}, 0
         for st in stems:
+            sub, tri = parse_stem(st)
+            has = ha4m_io.labels_path(a.data_root, sub, tri) is not None
+            labels[st] = {"labels_available": has}
+            if not has:
+                print(f"[{TAG}] cảnh báo: {st} không có Labels*.txt → bỏ qua oracle/eval cho trial này "
+                      "(labels_available=false)", file=sys.stderr)
+                continue
             out = out_dir / f"{st}_oracle.csv"
             if not can_write(out, a.force, TAG):
                 continue
-            df = oracle_steps(a.data_root, *parse_stem(st), cfg)
+            df = oracle_steps(a.data_root, sub, tri, cfg)
             df.to_csv(out, index=False)
+            n_ok += 1
             print(f"[{TAG}] {st}: {len(df)} đoạn oracle, cycle {df['end_s'].max() - df['start_s'].min():.2f}s → {out}")
+        if ctx:
+            ctx.set_trials(**labels)
+            ctx.record_stage("04_steps_oracle", n_trials=n_ok,
+                             no_labels=[s for s, v in labels.items() if not v["labels_available"]])
         return
 
     if not cfg.get("steps"):
-        sys.exit(f"[{TAG}] station.yaml chưa có steps")
-    stems = select_stems([p.stem for p in Path(a.events_dir).glob("*.csv")], a.subjects, a.trials)
+        print(f"[{TAG}] station.yaml chưa có steps", file=sys.stderr)
+        sys.exit(1)
+    stems = select_stems([p.stem for p in events_dir.glob("*.csv")], a.subjects, a.trials)
     for st in stems:
         out = out_dir / f"{st}_pred.csv"
         if not can_write(out, a.force, TAG):
             continue
-        ev = pd.read_csv(Path(a.events_dir) / f"{st}.csv")
+        ev = pd.read_csv(events_dir / f"{st}.csv")
         df = predicted_steps(ev, cfg)
         df.to_csv(out, index=False)
         nf = df.attrs.get("not_found", [])
@@ -196,6 +212,10 @@ def main() -> None:
             write_json(out_dir / f"{st}_eval.json", e)
             print(f"[{TAG}] {st} eval: MAE dur {e['mae_step_dur_s']}s, cycle err {e['cycle_time_err_s']}s, "
                   f"F1@0.5 {e['f1_iou05']}")
+        else:
+            print(f"[{TAG}] {st}: không có {orc_p.name} → bỏ qua eval")
+    if ctx:
+        ctx.record_stage("04_steps_pred", n_trials=len(stems))
 
 
 if __name__ == "__main__":

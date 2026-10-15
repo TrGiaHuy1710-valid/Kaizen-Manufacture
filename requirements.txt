@@ -22,12 +22,15 @@ tslearn
 
 # Pipeline CLI: config + LLM giải thích (07)
 pyyaml
-google-genai       # 07_explain: Gemini API (env GEMINI_API_KEY)
+anthropic          # 07_explain --provider anthropic (env ANTHROPIC_API_KEY)
+google-genai       # 07_explain --provider gemini (env GEMINI_API_KEY)
+pytest             # tests/test_validator.py
 
 # Hiển thị / dashboard
 matplotlib
 plotly
-streamlit
+streamlit          # app/ui.py (dashboard demo)
+imageio-ffmpeg     # tools/render_demo.py: encode H.264 phát được trên trình duyệt
 
 # Dataset OpenPack (tùy chọn)
 openpack-toolkit
