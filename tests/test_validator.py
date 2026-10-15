@@ -112,11 +112,16 @@ def test_parse_garbage_raises():
 # ---------------- Luồng 07 với provider giả (retry + parse_failed) ----------------
 def _run_07(tmp_path, monkeypatch, responses: list[str]) -> dict:
     m7 = importlib.import_module("07_explain")
-    llm = importlib.import_module("llm_providers")
+    import kaizen.llm as llm
     monkeypatch.chdir(tmp_path)          # không đụng outputs/runs/ thật của repo
     seq = iter(responses)
-    monkeypatch.setattr(llm, "check_credentials", lambda p: None)
-    monkeypatch.setattr(llm, "chat", lambda *a, **k: (next(seq), {"provider": "fake"}))
+
+    class Scripted:                      # provider giả: trả lần lượt các response (không mạng, không key)
+        name, model = "gemini", "fake-model"
+
+        def complete(self, system, user, **kw):
+            return llm.LLMResult(next(seq), {"provider": "fake"})
+    monkeypatch.setattr(llm, "get_provider", lambda name=None, model=None: Scripted())
     fpath = tmp_path / "findings.json"
     fpath.write_text(json.dumps({"findings": [F01]}, ensure_ascii=False))
     out = tmp_path / "explained.json"

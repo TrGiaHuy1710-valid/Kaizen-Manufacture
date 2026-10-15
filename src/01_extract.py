@@ -17,37 +17,15 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, base_parser, load_config, select_stems, setup, stem  # noqa: E402
-import ha4m_io  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from kaizen.core.cli import base_parser, setup  # noqa: E402
+from kaizen.core.config import load_config  # noqa: E402
+from kaizen.core.io import select_stems, stem  # noqa: E402
+from kaizen.skeleton import ha4m_io  # noqa: E402
+from kaizen.skeleton.batch import SUSPECT_DETECT, limit_per_subject, npz_meta  # noqa: E402
 
 TAG = "01"
-SUSPECT_DETECT = 0.85
-
-
-def npz_meta(p: Path) -> dict:
-    """meta + số frame của 1 .npz (đọc lười, không nạp kpts)."""
-    try:
-        with np.load(p, allow_pickle=False) as d:
-            meta = json.loads(str(d["meta"])) if "meta" in d.files else {}
-            meta["n_frames"] = int(d["t"].shape[0])
-        return meta
-    except Exception as e:  # file hỏng
-        return {"error": str(e)}
-
-
-def limit_per_subject(stems: list[str], n: int) -> list[str]:
-    if n <= 0:
-        return stems
-    out, cnt = [], {}
-    for st in stems:
-        sub = st.split("_")[0]
-        if cnt.get(sub, 0) < n:
-            out.append(st)
-            cnt[sub] = cnt.get(sub, 0) + 1
-    return out
 
 
 def main() -> None:

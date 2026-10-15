@@ -24,7 +24,18 @@ tslearn
 pyyaml
 anthropic          # 07_explain --provider anthropic (env ANTHROPIC_API_KEY)
 google-genai       # 07_explain --provider gemini (env GEMINI_API_KEY)
+openai==3.31.0     # 07_explain --provider openai (env OPENAI_API_KEY)
 pytest             # tests/test_validator.py
+
+# RAG + API service (kaizen.rag, kaizen.api) — pin đúng bản đã test
+fastapi==0.143.2
+uvicorn==0.54.0              # uvicorn kaizen.api.app:app
+python-multipart==0.0.32     # upload file (POST /documents)
+pymupdf==1.28.2              # parse PDF: block + trang + bbox + bảng
+chromadb==1.5.9              # vector store persistent data/rag_store/ (không server)
+sentence-transformers==6.1.0 # embedder local intfloat/multilingual-e5-small
+# torch: bản CPU là đủ cho e5-small và nhẹ hơn nhiều (~200 MB thay vì vài GB CUDA):
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
 
 # Hiển thị / dashboard
 matplotlib

@@ -12,8 +12,23 @@ Nguyên tắc BẤT DI BẤT DỊCH:
 1. Mọi con số (thời gian, quãng đường, góc, tỷ lệ) do code tính. LLM CHỈ giải thích, không sinh số.
 2. Mỗi bước pipeline = 1 script đọc file vào / ghi file ra, chạy lại độc lập được.
 3. Làm bản thô chạy thông toàn luồng TRƯỚC, tối ưu sau. Có `--oracle` để nửa sau không bị chặn bởi nửa trước.
-4. Ưu tiên đơn giản: KHÔNG ByteTrack (1 người/trạm), KHÔNG vector DB (KB nhỏ, nhét thẳng vào prompt),
-   KHÔNG train model. Chỉ pretrained + rule + thống kê.
+4. Ưu tiên đơn giản: KHÔNG ByteTrack (1 người/trạm), KHÔNG train model. Chỉ pretrained + rule + thống kê.
+   Đường mặc định của 07: KB nhỏ nhét thẳng vào prompt. RAG (Chroma local, không server) chỉ là chế độ tuỳ chọn
+   (`07 --use-rag`, API) cho tài liệu người dùng tải lên — citation là chunk_id, validator kiểm tồn tại trong store.
+
+## Package `kaizen/` (code thật nằm ở đây — scripts src/0X là wrapper mỏng, CLI + schema artifact không đổi)
+- `kaizen/skeleton`: Source (`open_source("ha4m://…"|"video://…"|"frames://…?fps=")`, registry `SOURCES`),
+  PoseBackend (`POSE_BACKENDS`), `extract`, `compute_features` (02), `detect_events` (03), ha4m_io, overlay.
+- `kaizen/analyzer`: THUẦN tính toán, import không cần key/mạng — `align_steps`/`evaluate` (04), `compute_metrics`/
+  `build_metrics_report` (05), `detect_findings` + `RULES: list[Rule]` (06; thêm rule = thêm 1 phần tử), report (08).
+- `kaizen/llm`: `get_provider(name)` (anthropic | gemini | openai | dry-run; env LLM_PROVIDER / LLM_MODEL),
+  `parsing.py` (parse lượng thứ chung), `prompts.py` (template có version EXPLAIN_V1, EXPLAIN_RAG_V1, EXTRACT_STEPS_V1…),
+  `validator.py` (whitelist số + citation tĩnh KB/SOP hoặc chunk_id động), `explain.py`.
+- `kaizen/rag`: ingest (PDF/DOCX/MD/TXT) → chunking heading-aware 300–600 token → embed (`KAIZEN_EMBEDDER`: e5 | hash…)
+  → `DocumentStore` (data/rag_store/) → `extract_steps` / `to_station`. `kaizen/api/app.py`: FastAPI.
+- `kaizen/core`: run_io, config, `schemas.py` (pydantic cho mọi artifact; dump `exclude_unset` → byte-giống file cũ).
+- `src/{ha4m_io,run_io,overlay,llm_validate,llm_providers}.py` là shim alias (`sys.modules`) cho app/ và tools cũ.
+- Refactor phải giữ artifact byte-giống: so `metrics.json`/`findings.json`… giữa code cũ và mới trên cùng input.
 
 ## Cấu trúc dữ liệu HA4M (ĐÃ XÁC NHẬN từ máy người dùng)
 
@@ -143,17 +158,18 @@ Xếp hạng: `impact_s_per_cycle × {high:1, med:0.6, low:0.3}` giảm dần.
 
 ### 07_explain.py — findings + KB → explained.json
 - Đọc `config/kaizen_kb.md` và `config/sop.md`: các đoạn đánh dấu `[KB-xx]` / `[SOP-xx]`.
-- Đa provider qua 1 interface (`src/llm_providers.py`): `--provider anthropic|gemini|dry-run`
-  (mặc định env `LLM_PROVIDER`, không có thì gemini). anthropic: `claude-sonnet-4-6`, env `ANTHROPIC_API_KEY`;
-  gemini: SDK `google-genai`, model `--llm-model` / env `GEMINI_MODEL` / mặc định `gemini-3.8-flash`, env `GEMINI_API_KEY`;
-  dry-run sinh explanation giả để test luồng không cần key/mạng.
-- Parse lượng thứ (`src/llm_validate.py`): bỏ code fence/lời dẫn, bọc object đơn, key thiếu → chuỗi rỗng +
+- Đa provider qua 1 interface (`kaizen/llm/providers.py`): `--provider anthropic|gemini|openai|dry-run`
+  (mặc định env `LLM_PROVIDER`, không có thì gemini; model `--llm-model` > env `LLM_MODEL` > env `<PROVIDER>_MODEL` >
+  mặc định). anthropic: `claude-sonnet-4-6`, env `ANTHROPIC_API_KEY`; gemini: SDK `google-genai`, `gemini-3.8-flash`,
+  env `GEMINI_API_KEY`; openai: SDK `openai`, `gpt-4.1-mini`, env `OPENAI_API_KEY` (json_object mode).
+  Thiếu key → `MissingAPIKeyError` ngay khi khởi tạo. dry-run sinh explanation giả để test luồng không cần key/mạng.
+- Parse lượng thứ (`kaizen/llm/parsing.py`, chung mọi provider): bỏ code fence/lời dẫn, bọc object đơn, key thiếu → chuỗi rỗng +
   `format_warning`; không parse được → hỏi lại 1 lần "chỉ JSON array"; vẫn hỏng → `validation: parse_failed`
   (pipeline không dừng).
 - Prompt: toàn bộ KB + findings JSON. Yêu cầu trả JSON THUẦN:
   `[{finding_id, observation, hypothesis, recommendation, citations: ["KB-03", ...]}]`.
   Ghi rõ trong prompt: observation chỉ được dùng số có trong findings; không được tạo số mới.
-- VALIDATOR (bắt buộc, chạy bằng code sau khi nhận response — `src/llm_validate.py`):
+- VALIDATOR (bắt buộc, chạy bằng code sau khi nhận response — `kaizen/llm/validator.py`):
   a) citation chuẩn hoá (`KB13`/`kb-13`/`[KB-13]` → `KB-13`) phải tồn tại trong KB/SOP;
   b) mọi token số trong observation+hypothesis+recommendation phải thuộc WHITELIST của finding: giá trị số
   (làm tròn 0 và 1 chữ số, cả |x|), số trong tên trường/chuỗi (`dev_p90_deg` → 90, "lệch > 30°" → 30,
@@ -230,7 +246,8 @@ data/keypoints/<stem>_<model>.npz          # KHÔNG thuộc run — tái dùng g
 
 ## Quy ước code
 - Python 3.10+, chỉ dùng lib trong requirements.txt sẵn có (numpy<2, pandas, scipy, shapely,
-  OneEuroFilter, matplotlib, opencv qua mediapipe, anthropic, google-genai; pytest cho tests).
+  OneEuroFilter, matplotlib, opencv qua mediapipe, anthropic, google-genai, openai; RAG/API: fastapi, uvicorn,
+  python-multipart, pymupdf, chromadb, sentence-transformers (torch CPU); pytest cho tests). Không Docker, không DB server.
 - Type hint + docstring ngắn cho hàm public. Không class nếu hàm đủ. Log bằng print có prefix `[02]`...
 - Mọi script: chạy được từ repo root, tạo thư mục output nếu chưa có, không ghi đè im lặng
   (thêm `--force`).

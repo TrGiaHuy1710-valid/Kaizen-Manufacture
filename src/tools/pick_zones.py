@@ -16,26 +16,10 @@ import cv2
 import numpy as np
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import ha4m_io  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from kaizen.skeleton import ha4m_io  # noqa: E402
+from kaizen.skeleton.overlay import ZONE_PALETTE as PALETTE, draw_zones  # noqa: E402,F401
 
-PALETTE = [(46, 134, 171), (209, 73, 91), (237, 174, 73), (0, 121, 140), (102, 46, 155),
-           (60, 179, 113), (255, 127, 80), (106, 90, 205), (210, 105, 30), (70, 130, 180)]
-
-
-def draw_zones(img: np.ndarray, zones: dict, thick: int = 3) -> np.ndarray:
-    """Vẽ polygon + tên zone lên ảnh (tại chỗ)."""
-    for i, (name, pts) in enumerate(zones.items()):
-        if not pts:
-            continue
-        c = PALETTE[i % len(PALETTE)]
-        p = np.array(pts, np.int32)
-        overlay = img.copy()
-        cv2.fillPoly(overlay, [p], c)
-        cv2.addWeighted(overlay, 0.18, img, 0.82, 0, img)
-        cv2.polylines(img, [p], True, c, thick)
-        cv2.putText(img, name, tuple(p.min(0) + [4, -8]), cv2.FONT_HERSHEY_SIMPLEX, 0.9, c, 2)
-    return img
 
 
 def main() -> None:

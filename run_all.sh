@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Chạy toàn luồng 00→08 vào MỘT run mới outputs/runs/<run_id>/ (không ghi đè run cũ). Dừng ngay khi lỗi.
 #   bash run_all.sh [--oracle] [--model mediapipe|rtmw] [--subjects U001,U002|all] [--trials V001|all]
-#                   [--provider gemini|anthropic|dry-run] [--llm-model NAME] [--dry-run] [--tag TEXT]
+#                   [--provider gemini|anthropic|openai|dry-run] [--llm-model NAME] [--dry-run] [--tag TEXT]
 #                   [--data-root data/ha4m[,data/ha4m_new]] [--run RUN_ID] [--force]
 # --oracle   : 05–08 dùng bước từ nhãn HA4M (mặc định: bước dự đoán; eval vs nhãn vẫn tính nếu có nhãn)
 # --provider : LLM cho 07 (mặc định env LLM_PROVIDER, không có thì gemini); --dry-run = --provider dry-run
@@ -37,10 +37,13 @@ SOURCE=$([[ $ORACLE == 1 ]] && echo oracle || echo pred)
 
 # Kiểm tra key LLM sớm để không chạy hết luồng rồi mới hỏng ở 07
 if [[ "$PROVIDER" == "gemini" && -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]]; then
-  echo "[run_all] thiếu GEMINI_API_KEY cho --provider gemini (hoặc dùng --dry-run / --provider anthropic)" >&2; exit 1
+  echo "[run_all] thiếu GEMINI_API_KEY cho --provider gemini (hoặc dùng --dry-run / --provider anthropic|openai)" >&2; exit 1
 fi
 if [[ "$PROVIDER" == "anthropic" && -z "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
   echo "[run_all] thiếu ANTHROPIC_API_KEY cho --provider anthropic" >&2; exit 1
+fi
+if [[ "$PROVIDER" == "openai" && -z "${OPENAI_API_KEY:-}" ]]; then
+  echo "[run_all] thiếu OPENAI_API_KEY cho --provider openai" >&2; exit 1
 fi
 
 SEL=(--data-root "$ROOT" --subjects "$SUBJ" --trials "$TRI")
