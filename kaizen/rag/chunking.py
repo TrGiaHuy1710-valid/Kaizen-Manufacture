@@ -2,8 +2,10 @@
 
 Quy tắc:
   - Sang trang → luôn cắt (mỗi chunk thuộc 1 trang → trích dẫn chính xác trang).
-  - Gặp heading → cắt nếu chunk hiện tại đã ≥ min_tokens; nếu chưa thì gộp tiếp (mục nhỏ không thành chunk vụn).
+  - Gặp heading → cắt nếu chunk hiện tại đã ≥ min_tokens, HOẶC mục hiện tại đã có ≥ section_min_tokens (50) nội dung:
+    tài liệu ngắn (work instruction) mỗi mục 1 chunk → section đúng, truy vấn không bị loãng; mục vụn (< 50) vẫn gộp tiếp.
   - Bảng → chunk riêng (kind=table), giữ markdown; bảng quá dài → tách theo dòng, lặp lại header.
+    Đoạn dẫn ngắn ngay trước bảng (heading + < 100 token) đi CÙNG bảng (bảng có ngữ cảnh, không thành chunk vụn).
   - Khối vượt max_tokens → tách theo câu/từ; chunk kế tiếp mở đầu bằng `overlap` token cuối của chunk trước.
 Token ≈ từ cách nhau bởi khoảng trắng (tiếng Việt: âm tiết) — xấp xỉ đủ cho kích thước chunk.
 chunk_id = f"{doc_id}:p{page}:c{k}" (k = thứ tự chunk trong trang) → ổn định khi ingest lại cùng file.
@@ -16,6 +18,8 @@ from dataclasses import asdict, dataclass
 from kaizen.rag.ingest import Block, ParsedDoc
 
 MIN_TOKENS, MAX_TOKENS, OVERLAP = 300, 600, 50
+SECTION_MIN_TOKENS = 50          # mục đã có chừng này token nội dung → heading kế tiếp mở chunk mới
+TABLE_LEAD_TOKENS = 100          # đoạn dẫn ≤ chừng này token trước bảng → gộp vào chunk bảng
 
 
 @dataclass
@@ -84,13 +88,14 @@ def _split_table(md: str, max_tokens: int) -> list[str]:
 
 
 def chunk_document(doc: ParsedDoc, min_tokens: int = MIN_TOKENS, max_tokens: int = MAX_TOKENS,
-                   overlap: int = OVERLAP) -> list[Chunk]:
+                   overlap: int = OVERLAP, section_min_tokens: int = SECTION_MIN_TOKENS) -> list[Chunk]:
     """ParsedDoc → list Chunk có chunk_id ổn định + metadata {doc_id, title, page, section}."""
     chunks: list[Chunk] = []
     per_page: dict[int, int] = {}
     stack: list[tuple[int, str]] = []                     # (level, heading) đường dẫn mục hiện tại
     cur: list[str] = []
     cur_page, cur_section = None, ""
+    sec_body = 0                                          # token nội dung (không tính heading) của mục hiện tại
 
     def section_path() -> str:
         return " > ".join(h for _, h in stack)
@@ -116,8 +121,9 @@ def chunk_document(doc: ParsedDoc, min_tokens: int = MIN_TOKENS, max_tokens: int
         if cur_page is not None and b.page != cur_page:
             flush()
         if b.kind == "heading":
-            if cur and n_tokens("\n".join(cur)) >= min_tokens:
+            if cur and (n_tokens("\n".join(cur)) >= min_tokens or sec_body >= section_min_tokens):
                 flush()
+            sec_body = 0
             while stack and stack[-1][0] >= max(b.level, 1):
                 stack.pop()
             stack.append((max(b.level, 1), b.text))
@@ -127,11 +133,16 @@ def chunk_document(doc: ParsedDoc, min_tokens: int = MIN_TOKENS, max_tokens: int
             cur_page = b.page
             continue
         if b.kind == "table":
-            flush()
+            parts = _split_table(b.text, max_tokens) if n_tokens(b.text) > max_tokens else [b.text]
+            lead = "\n".join(cur)
             sec = section_path()
-            for part in (_split_table(b.text, max_tokens) if n_tokens(b.text) > max_tokens else [b.text]):
+            if cur and cur_page == b.page and n_tokens(lead) <= TABLE_LEAD_TOKENS \
+                    and n_tokens(lead) + n_tokens(parts[0]) <= max_tokens:
+                parts[0], sec, cur = lead + "\n" + parts[0], cur_section, []
+            flush()
+            for part in parts:
                 emit(part, b.page, sec, "table")
-            cur_page, cur_section = b.page, sec
+            cur_page, cur_section = b.page, section_path()
             continue
         if not cur:
             cur_section = section_path()
@@ -145,5 +156,6 @@ def chunk_document(doc: ParsedDoc, min_tokens: int = MIN_TOKENS, max_tokens: int
             cur_section = section_path()
         cur.append(b.text)
         cur_page = b.page
+        sec_body += bt
     flush()
     return chunks

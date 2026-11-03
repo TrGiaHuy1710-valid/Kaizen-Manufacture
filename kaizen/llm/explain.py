@@ -4,6 +4,8 @@ Luồng: prompt (KB + SOP + findings, hoặc chunk RAG truy xuất theo từng f
 1 lần "chỉ JSON") → validate từng finding → finding fail được gọi lại 1 lần kèm thông báo lỗi validator →
 explained.json {attempts, final, validation: passed | failed_after_retry | parse_failed}, pass_rate,
 pass_rate_first_attempt. Chế độ RAG: citation = chunk_id, hợp lệ khi tồn tại trong store (retriever.has_chunk).
+version="v2" (07 mặc định): prompt EXPLAIN_V2 / EXPLAIN_V2_KB + <context> (bảng bước rút gọn id/dur/std/lệch + zone
+— số trong context của trial được phép dùng), schema thêm ecrs + remeasure, validator kiểm thêm định dạng (FORMAT_V2).
 """
 from __future__ import annotations
 
@@ -12,10 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from kaizen.llm.prompts import (DRY_CITES, EXPLAIN_RAG_V1, EXPLAIN_V1, ONLY_JSON_V1, RETRY_FEEDBACK_V1,
-                                findings_json)
+from kaizen.llm.prompts import (DRY_CITES, EXPLAIN_RAG_V1, EXPLAIN_V1, EXPLAIN_V2, EXPLAIN_V2_KB, ONLY_JSON_V1,
+                                RETRY_FEEDBACK_V1, findings_json)
 from kaizen.llm.providers import MAX_TOKENS, LLMError, LLMProvider
-from kaizen.llm.validator import FIELDS, ParseError, load_ids, parse_explanations, validate
+from kaizen.llm.validator import FIELDS, FORMAT_V2, V2_FIELDS, ParseError, load_ids, parse_explanations, validate
 
 TAG = "07"
 VALIDATOR_DESC = ("citation (chuẩn hoá) ∈ KB/SOP; số trong observation+hypothesis+recommendation ∈ whitelist "
@@ -29,8 +31,13 @@ TYPE_QUERY = {
     "sequence_deviation": "sai thứ tự, thiếu bước, poka-yoke, thứ tự bước bắt buộc",
     "hand_imbalance": "cân bằng tải hai tay, một tay rảnh, đồ gá giữ chi tiết",
     "high_variation": "biến động cycle time, Mura, không đều, chuẩn hoá công việc",
-    "wrist_posture": "tư thế cổ tay, Muri, ergonomic, quá tải",
+    "wrist_posture": "tư thế cổ tay trung tính gập 30 độ, Muri, ergonomic, quá tải",
+    "std_time_slow": "thời gian chuẩn của bước, chênh lệch so với chuẩn, standardized work",
+    "std_time_fast": "thời gian chuẩn của bước, bỏ sót thao tác, cập nhật chuẩn",
 }
+VALIDATOR_DESC_V2 = " + định dạng: quan sát ≤2 câu, giả thuyết 1 câu, đề xuất ≤2 câu, đo lại ≤12 từ (≤20 tiếng), ecrs ∈ E|C|R|S"
+DRY_ECRS = {"extra_pick": "E", "long_idle": "R", "hand_imbalance": "R", "wrist_posture": "R", "std_time_slow": "S",
+            "std_time_fast": "S", "slow_step": "S", "high_variation": "S", "sequence_deviation": "E"}
 
 
 @dataclass
@@ -57,7 +64,8 @@ class Retriever(Protocol):
         """chunk_id có trong store không."""
 
 
-def dry_run_explain(findings: list[dict], rag_cites: dict[str, list[str]] | None = None) -> list[dict]:
+def dry_run_explain(findings: list[dict], rag_cites: dict[str, list[str]] | None = None,
+                    v2: bool = False) -> list[dict]:
     """Explanation giả, chỉ dùng số có trong finding → test luồng không cần mạng (RAG: trích chunk top đầu)."""
     out = []
     for f in findings:
@@ -68,18 +76,20 @@ def dry_run_explain(findings: list[dict], rag_cites: dict[str, list[str]] | None
                     "observation": f"[dry-run] {e['metric']} = {e['value']} {e['unit']} (rule {f['rule']}).",
                     "hypothesis": "[dry-run] Giả thuyết nguyên nhân sẽ do LLM sinh khi chạy thật.",
                     "recommendation": "[dry-run] Kỹ sư IE xem lại đoạn video bằng chứng và áp dụng ECRS.",
+                    **({"ecrs": DRY_ECRS.get(f["type"], "S"),
+                        "remeasure": "[dry-run] Đo lại chỉ số này sau cải tiến"} if v2 else {}),
                     "citations": cites})
     return out
 
 
 def ask_parsed(provider: LLMProvider, system: str, user: str, history: list[dict],
-               calls: list[dict]) -> tuple[list[dict] | None, str, list[str]]:
+               calls: list[dict], extra: tuple[str, ...] = ()) -> tuple[list[dict] | None, str, list[str]]:
     """Gọi LLM + parse; không parse được thì hỏi lại 1 lần. Trả (items|None, raw_text_cuối, lỗi_parse)."""
     errs = []
     res = provider.complete(system, user, history=history, max_tokens=MAX_TOKENS)
     calls.append(res.usage)
     try:
-        return parse_explanations(res.text), res.text, errs
+        return parse_explanations(res.text, extra), res.text, errs
     except ParseError as e:
         errs.append(str(e))
         print(f"[{TAG}] parse lỗi ({e}) → hỏi lại 1 lần chỉ JSON", file=sys.stderr)
@@ -88,7 +98,7 @@ def ask_parsed(provider: LLMProvider, system: str, user: str, history: list[dict
                                                 {"role": "assistant", "content": res.text}])
     calls.append(res2.usage)
     try:
-        return parse_explanations(res2.text), res2.text, errs
+        return parse_explanations(res2.text, extra), res2.text, errs
     except ParseError as e:
         errs.append(str(e))
         return None, res2.text, errs
@@ -99,10 +109,10 @@ def pick(items: list[dict] | None, fid: str) -> dict | None:
     return next((x for x in items or [] if x.get("finding_id") == fid), None)
 
 
-def explanation_fields(x: dict | None) -> dict:
-    """Chuẩn hoá explanation về đúng key (finding_id, 3 trường, citations[, format_warning])."""
+def explanation_fields(x: dict | None, extra: tuple[str, ...] = ()) -> dict:
+    """Chuẩn hoá explanation về đúng key (finding_id, 3 trường[, ecrs, remeasure], citations[, format_warning])."""
     x = x or {}
-    out = {k: x.get(k, "") for k in ("finding_id",) + FIELDS}
+    out = {k: x.get(k, "") for k in ("finding_id",) + FIELDS + tuple(extra)}
     out["citations"] = x.get("citations", [])
     if x.get("format_warning"):
         out["format_warning"] = x["format_warning"]
@@ -139,56 +149,96 @@ def render_documents(chunks: list) -> str:
     return "\n\n".join(out)
 
 
+def step_context(metrics: dict, standards: dict | None = None, trials: list[str] | None = None,
+                 zones: list[str] | None = None) -> dict:
+    """<context> cho EXPLAIN_V2: {steps: {trial: [{id, name, dur_s, std_s, dev_pct}]}, zones} — số do code tính."""
+    std = {int(k): (v or {}).get("std_s") for k, v in ((standards or {}).get("std_times") or {}).items()}
+    out = {}
+    for st in trials or list(metrics.get("trials", {})):
+        m = metrics.get("trials", {}).get(st)
+        if not m:
+            continue
+        rows = []
+        for row in sorted(m["steps"]["rows"], key=lambda x: x["step_id"]):
+            s = std.get(int(row["step_id"]))
+            rows.append({"id": row["step_id"], "name": row["name"], "dur_s": row["dur_s"], "std_s": s,
+                         "dev_pct": round((row["dur_s"] - s) / s * 100, 1) if s else None})
+        out[st] = rows
+    return {"steps": out, "zones": list(zones or [])}
+
+
+def _context_for(context: dict | None, f: dict) -> dict:
+    """Phần context của 1 finding (bảng bước các trial của nó, tối đa 3) — dùng cho prompt + whitelist số."""
+    if not context:
+        return {}
+    trials = (f.get("evidence", {}).get("trials") or [])[:3]
+    return {"steps": {t: context.get("steps", {}).get(t, []) for t in trials}, "zones": context.get("zones", [])}
+
+
 def explain(findings: list[dict], kb: KnowledgeBase | None, provider: LLMProvider, *,
             retriever: Retriever | None = None, k: int = 4, retry: bool = True,
-            log: Callable[[str], None] = print) -> dict:
+            log: Callable[[str], None] = print, version: str = "v1", context: dict | None = None) -> dict:
     """findings → nội dung explained.json. retriever ≠ None → chế độ RAG (citation chunk_id).
 
+    version: "v1" (EXPLAIN_V1 / EXPLAIN_RAG_V1, 3 trường) | "v2" (EXPLAIN_V2 / EXPLAIN_V2_KB + context + ecrs/remeasure,
+    validator kiểm định dạng). context: step_context(...) — chỉ dùng ở v2.
     Raise LLMError nếu lần gọi đầu thất bại (lỗi khi retry chỉ ghi nhận, không dừng).
     """
+    if version not in ("v1", "v2"):
+        raise ValueError(f"version không hỗ trợ: {version!r} (v1 | v2)")
+    v2 = version == "v2"
+    extra = V2_FIELDS if v2 else ()
+    fmt = FORMAT_V2 if v2 else None
     kb = kb or KnowledgeBase()
     kb_ids = set(kb.ids)
     by_id = {f["id"]: f for f in findings}
     citation_exists = retriever.has_chunk if retriever is not None else None
+    ctx_trials = sorted({t for f in findings for t in (f.get("evidence", {}).get("trials") or [])[:3]})
+    ctx_json = findings_json({"steps": {t: (context or {}).get("steps", {}).get(t, []) for t in ctx_trials},
+                              "zones": (context or {}).get("zones", [])}) if v2 else ""
     rag, per = None, {}
     if retriever is not None and findings:
         per, docs = retrieve_for_findings(findings, retriever, k)
-        rag = {"prompt": EXPLAIN_RAG_V1.id, "k": k,
+        tmpl = EXPLAIN_V2 if v2 else EXPLAIN_RAG_V1
+        rag = {"prompt": tmpl.id, "k": k,
                "per_finding": {fid: [{"chunk_id": c.chunk_id, "score": round(float(c.score), 4), "page": c.page,
                                       "title": c.title} for c in cs] for fid, cs in per.items()}}
-        tmpl = EXPLAIN_RAG_V1
         prompt_findings = [{**f, "relevant_chunks": [c.chunk_id for c in per[f["id"]]]} for f in findings]
-        user0 = tmpl.render(documents=render_documents(docs), findings_json=findings_json(prompt_findings))
+        kw = {"context_json": ctx_json} if v2 else {}
+        user0 = tmpl.render(documents=render_documents(docs), findings_json=findings_json(prompt_findings), **kw)
     else:
-        tmpl = EXPLAIN_V1
-        user0 = tmpl.render(kb_text=kb.kb_text, sop_text=kb.sop_text, findings_json=findings_json(findings))
+        tmpl = EXPLAIN_V2_KB if v2 else EXPLAIN_V1
+        kw = {"context_json": ctx_json} if v2 else {}
+        user0 = tmpl.render(kb_text=kb.kb_text, sop_text=kb.sop_text, findings_json=findings_json(findings), **kw)
 
     calls: list[dict] = []
     raw = {}
     if not findings:
         first = []
     elif provider.name == "dry-run":
-        first = dry_run_explain(findings, {fid: [c.chunk_id for c in cs] for fid, cs in per.items()} if rag else None)
+        first = dry_run_explain(findings, {fid: [c.chunk_id for c in cs] for fid, cs in per.items()} if rag else None,
+                                v2=v2)
     else:
-        first, raw["attempt1"], perr = ask_parsed(provider, tmpl.system, user0, [], calls)
+        first, raw["attempt1"], perr = ask_parsed(provider, tmpl.system, user0, [], calls, extra)
         if perr:
             raw["parse_errors_attempt1"] = perr
 
     def check(x, f):
-        return validate(x, f, kb_ids, citation_exists)
+        vf = {**f, "context": _context_for(context, f)} if v2 and context else f
+        return validate(x, vf, kb_ids, citation_exists, fmt)
 
     # Lần 1: validate
     results = {}
     for f in findings:
         x = pick(first, f["id"])
         if first is None:
-            results[f["id"]] = {"attempts": [], "final": explanation_fields(None), "validation": "parse_failed",
+            results[f["id"]] = {"attempts": [], "final": explanation_fields(None, extra), "validation": "parse_failed",
                                 "final_check": {"message": "không parse được response (xem raw_responses)"}}
             continue
         v = check(x, f) if x else {"status": "failed", "unknown_numbers": [], "bad_citations": [],
                                    "citations_normalized": [], "message": "LLM không trả lời finding này"}
-        results[f["id"]] = {"attempts": [{"attempt": 1, "explanation": explanation_fields(x), "check": v}],
-                            "final": explanation_fields(x), "final_check": v,
+        results[f["id"]] = {"attempts": [{"attempt": 1, "explanation": explanation_fields(x, extra), "check": v}],
+                            "final": explanation_fields(x, extra), "final_check": v,
                             "validation": "passed" if v["status"] == "passed" else "failed"}
 
     # Lần 2: retry có phản hồi cho finding fail (chỉ khi gọi LLM thật)
@@ -199,7 +249,7 @@ def explain(findings: list[dict], kb: KnowledgeBase | None, provider: LLMProvide
         hist = [{"role": "user", "content": user0}, {"role": "assistant", "content": raw["attempt1"]}]
         log(f"[{TAG}] retry {len(failed)} finding fail: {failed}")
         try:
-            second, raw["attempt2"], perr = ask_parsed(provider, tmpl.system, retry_msg, hist, calls)
+            second, raw["attempt2"], perr = ask_parsed(provider, tmpl.system, retry_msg, hist, calls, extra)
             if perr:
                 raw["parse_errors_attempt2"] = perr
         except LLMError as e:
@@ -211,9 +261,9 @@ def explain(findings: list[dict], kb: KnowledgeBase | None, provider: LLMProvide
                 "status": "failed", "unknown_numbers": [], "bad_citations": [], "citations_normalized": [],
                 "message": "retry không trả lời finding này" if second is not None else "retry không parse được"}
             r_ = results[fid]
-            r_["attempts"].append({"attempt": 2, "explanation": explanation_fields(x), "check": v})
+            r_["attempts"].append({"attempt": 2, "explanation": explanation_fields(x, extra), "check": v})
             if x:
-                r_["final"], r_["final_check"] = explanation_fields(x), v
+                r_["final"], r_["final_check"] = explanation_fields(x, extra), v
             r_["validation"] = "passed" if v["status"] == "passed" else "failed_after_retry"
 
     items = [{"finding_id": fid, **r_} for fid, r_ in results.items()]
@@ -227,8 +277,10 @@ def explain(findings: list[dict], kb: KnowledgeBase | None, provider: LLMProvide
            "n_passed_first_attempt": n_pass1, "pass_rate_first_attempt": round(n_pass1 / n, 3) if n else None,
            "n_retried": sum(len(x["attempts"]) > 1 for x in items),
            "n_parse_failed": sum(x["validation"] == "parse_failed" for x in items),
-           "validator": VALIDATOR_DESC_RAG if retriever is not None else VALIDATOR_DESC,
+           "validator": (VALIDATOR_DESC_RAG if retriever is not None else VALIDATOR_DESC) + (VALIDATOR_DESC_V2 if v2 else ""),
            "raw_responses": raw, "explanations": items}
+    if v2:
+        res["prompt"] = tmpl.id
     if retriever is not None:
-        res["rag"] = rag or {"prompt": EXPLAIN_RAG_V1.id, "k": k, "per_finding": {}}
+        res["rag"] = rag or {"prompt": (EXPLAIN_V2 if v2 else EXPLAIN_RAG_V1).id, "k": k, "per_finding": {}}
     return res

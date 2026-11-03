@@ -18,6 +18,9 @@ data/
 # Model MediaPipe tải bằng setup.sh
 models/*.task
 models/*.onnx
+# Model tự train (kaizen.train) — lớn, sinh lại bằng lệnh train
+models/segmenter/
+models/pose_ft/
 
 # --- Output pipeline (sinh lại bằng run_all.sh) ---
 outputs/*

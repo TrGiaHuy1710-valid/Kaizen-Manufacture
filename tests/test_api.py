@@ -90,10 +90,17 @@ def test_explain_endpoint_rag_save_and_provider_errors(client, tmp_path):
     r = client.post("/analyze/explain", json={"run_id": "latest", "provider": "dry-run", "use_rag": True, "k": 2})
     assert r.status_code == 200, r.text
     ex = r.json()
-    assert ex["run_id"] == RID and ex["pass_rate"] == 1.0 and ex["rag"]["prompt"] == "explain_rag_v1"
+    assert ex["run_id"] == RID and ex["pass_rate"] == 1.0 and ex["rag"]["prompt"] == "explain_v2"
     assert all(c.startswith("DOC-") for c in ex["explanations"][0]["final"]["citations"])
-    plain = client.post("/analyze/explain", json={"run_id": RID, "provider": "dry-run", "save": True}).json()
+    det = ex["explanations"][0]["citations_detail"]
+    assert det and all(d["page"] and d["short"].endswith(f"tr.{d['page']}]") for d in det)
+    assert ex["explanations"][0]["final"]["ecrs"] in "ECRS" and ex["citation_mode"] == "rag"
+    auto = client.post("/analyze/explain", json={"run_id": RID, "provider": "dry-run"}).json()
+    assert auto["citation_mode"] == "rag" and "rag" in auto              # store đã có chunk → RAG tự bật
+    plain = client.post("/analyze/explain", json={"run_id": RID, "provider": "dry-run", "use_rag": False,
+                                                  "save": True}).json()
     assert plain["explanations"][0]["final"]["citations"] == ["KB-03", "KB-16"] and "rag" not in plain
+    assert plain["citation_mode"] == "kb" and plain["prompt"] == "explain_v2_kb"
     saved = tmp_path / "outputs" / "runs" / RID / "explained" / "explained.json"
     assert json.loads(saved.read_text())["pass_rate"] == 1.0
     assert client.get(f"/runs/{RID}/explained").json()["provider"] == "dry-run"

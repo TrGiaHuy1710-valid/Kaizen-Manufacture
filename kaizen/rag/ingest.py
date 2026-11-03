@@ -5,6 +5,8 @@ PDF (PyMuPDF):
     trung vị của tài liệu) hoặc dòng ngắn in đậm; cấp heading theo thứ hạng cỡ chữ.
   - bảng: page.find_tables() → markdown (table.to_markdown()); text nằm trong bbox bảng bị bỏ để không lặp.
   - trang scan (ít text, có ảnh phủ phần lớn trang) → needs_ocr, bỏ qua ở v1 (TODO: OCR), KHÔNG crash.
+  - header/footer chạy (khối ở dải 8% trên/dưới trang, lặp lại ở ≥ 2 trang sau khi bỏ chữ số, vd "Trang 1") → bỏ.
+  - tiêu đề: metadata PDF nếu là tên thật (bỏ "(anonymous)", "untitled"...) > heading đầu tiên > tên file.
 DOCX: đọc thẳng word/document.xml (zip) — Heading*/Title → heading, w:tbl → markdown; ngắt trang (w:br type=page /
   lastRenderedPageBreak) → tăng số trang (xấp xỉ).
 MD: '#' → heading theo cấp, dòng '|' liên tiếp → bảng, đoạn cách bởi dòng trống. TXT: đoạn; '\\f' = sang trang.
@@ -23,6 +25,8 @@ from xml.etree import ElementTree as ET
 SUPPORTED = {".pdf": "pdf", ".docx": "docx", ".md": "md", ".markdown": "md", ".txt": "txt"}
 OCR_TEXT_MIN_CHARS = 30          # trang có ít hơn số ký tự này …
 OCR_IMAGE_MIN_FRAC = 0.3         # … và ảnh phủ ≥ 30% diện tích → coi là trang scan
+RUNNING_BAND = 0.08              # header/footer chạy: khối nằm trong 8% trên/dưới trang …
+PLACEHOLDER_TITLES = {"", "(anonymous)", "anonymous", "untitled", "(untitled)", "document", "(unspecified)"}
 
 
 @dataclass
@@ -79,6 +83,8 @@ def parse_document(path: str | Path | None = None, *, data: bytes | None = None,
         blocks, pages, ocr, meta_title = (_parse_md(text) if kind == "md" else _parse_txt(text)), 0, [], None
         pages = max((b.page for b in blocks), default=1)
     first_heading = next((b.text for b in blocks if b.kind == "heading"), None)
+    if meta_title and (meta_title.strip().lower() in PLACEHOLDER_TITLES or meta_title.startswith("Microsoft Word - ")):
+        meta_title = None                         # metadata mặc định của trình xuất PDF, không phải tên tài liệu
     t = title or meta_title or first_heading or Path(filename).stem
     return ParsedDoc(doc_id, t.strip(), filename, kind, pages, blocks, ocr, sha)
 
@@ -114,6 +120,27 @@ def _is_scanned(page) -> bool:
     return img_area / area >= OCR_IMAGE_MIN_FRAC
 
 
+def _norm_running(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"\d+", "#", text)).strip().lower()
+
+
+def _running_lines(pdf) -> set[tuple[int, str]]:
+    """(trang, text chuẩn hoá) của header/footer chạy: ở dải RUNNING_BAND trên/dưới, lặp lại ở ≥ 2 trang."""
+    if pdf.page_count < 2:
+        return set()
+    seen: dict[str, set[int]] = {}
+    for pno, page in enumerate(pdf, 1):
+        h = page.rect.height or 1.0
+        for b in page.get_text("dict")["blocks"]:
+            y0, y1 = b["bbox"][1] / h, b["bbox"][3] / h
+            if b.get("type") != 0 or RUNNING_BAND < y0 and y1 < 1 - RUNNING_BAND:
+                continue
+            t = " ".join("".join(sp["text"] for sp in ln["spans"]).strip() for ln in b["lines"]).strip()
+            if t:
+                seen.setdefault(_norm_running(t), set()).add(pno)
+    return {(p, t) for t, pages in seen.items() if len(pages) >= 2 for p in pages}
+
+
 def _parse_pdf(data: bytes) -> tuple[list[Block], int, list[int], str | None]:
     import pymupdf
     if hasattr(pymupdf, "no_recommend_layout"):
@@ -122,6 +149,7 @@ def _parse_pdf(data: bytes) -> tuple[list[Block], int, list[int], str | None]:
     body = _span_stats(pdf)
     raw: list[tuple[Block, float]] = []          # (block, cỡ chữ lớn nhất) để xếp cấp heading
     ocr: list[int] = []
+    running = _running_lines(pdf)
     for pno, page in enumerate(pdf, 1):
         if _is_scanned(page):
             ocr.append(pno)                       # TODO v2: OCR (vd PaddleOCR/Tesseract) cho trang scan
@@ -152,7 +180,7 @@ def _parse_pdf(data: bytes) -> tuple[list[Block], int, list[int], str | None]:
                     if sp["flags"] & 16 or "bold" in sp["font"].lower():
                         bold_chars += n
             text = " ".join(lines).strip()
-            if not text:
+            if not text or (pno, _norm_running(text)) in running:
                 continue
             short = len(text) <= 90 and not text.endswith((".", ";", ","))
             is_head = max_size >= body * 1.15 or (short and n_chars and bold_chars / n_chars > 0.8)

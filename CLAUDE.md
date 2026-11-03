@@ -12,7 +12,8 @@ Nguyên tắc BẤT DI BẤT DỊCH:
 1. Mọi con số (thời gian, quãng đường, góc, tỷ lệ) do code tính. LLM CHỈ giải thích, không sinh số.
 2. Mỗi bước pipeline = 1 script đọc file vào / ghi file ra, chạy lại độc lập được.
 3. Làm bản thô chạy thông toàn luồng TRƯỚC, tối ưu sau. Có `--oracle` để nửa sau không bị chặn bởi nửa trước.
-4. Ưu tiên đơn giản: KHÔNG ByteTrack (1 người/trạm), KHÔNG train model. Chỉ pretrained + rule + thống kê.
+4. Ưu tiên đơn giản: KHÔNG ByteTrack (1 người/trạm). Đường mặc định chỉ pretrained + rule + thống kê; training
+   (`kaizen/train/`, docs/training.md) là TUỲ CHỌN, chỉ chạy khi người dùng tự gõ lệnh — không bao giờ train ngầm.
    Đường mặc định của 07: KB nhỏ nhét thẳng vào prompt. RAG (Chroma local, không server) chỉ là chế độ tuỳ chọn
    (`07 --use-rag`, API) cho tài liệu người dùng tải lên — citation là chunk_id, validator kiểm tồn tại trong store.
 
@@ -29,6 +30,15 @@ Nguyên tắc BẤT DI BẤT DỊCH:
 - `kaizen/core`: run_io, config, `schemas.py` (pydantic cho mọi artifact; dump `exclude_unset` → byte-giống file cũ).
 - `src/{ha4m_io,run_io,overlay,llm_validate,llm_providers}.py` là shim alias (`sys.modules`) cho app/ và tools cũ.
 - Refactor phải giữ artifact byte-giống: so `metrics.json`/`findings.json`… giữa code cũ và mới trên cùng input.
+
+## Training tuỳ chọn (`kaizen/train/` — hướng dẫn lệnh: docs/training.md)
+- `segmenter` (MS-TCN, torch): keypoint .npz + Labels.txt → tách bước theo frame, lớp = (action, repetition).
+  `python -m kaizen.train.segmenter status|train|cv|eval|predict`; model ở `models/segmenter/<name>/` + `LATEST`.
+  04: `--segmenter rule|mstcn` (mặc định env `KAIZEN_SEGMENTER`, không có → rule; artifact rule không đổi).
+  Đặc trưng spec `kp_v1` (`features.py`, numpy) dùng chung train/suy luận; chia train/val/test THEO SUBJECT.
+- `pose` (fine-tune RTMPose COCO-17): `prepare` xuất COCO từ skeleton Kinect (nhãn giả), `eval` PCK vs Kinect;
+  train bằng mmpose trong env riêng (`pose_configs/`), export ONNX → backend `rtmpose-custom` (env `KAIZEN_POSE_ONNX`).
+- Test: `tests/test_train.py` (dữ liệu tổng hợp, smoke-train vài epoch — không phải train thật).
 
 ## Cấu trúc dữ liệu HA4M (ĐÃ XÁC NHẬN từ máy người dùng)
 
@@ -154,6 +164,10 @@ Rule tối thiểu:
 - R4 sai thứ tự / thiếu bước: chuỗi step_id ≠ chuỗi SOP (chỉ chạy với predicted; với oracle = sanity check).
 - R5 mất cân bằng tay: 1 tay idle > 60% thời gian 1 bước trong khi tay kia hoạt động.
 - R6 biến động lớn: CV cycle_time giữa trial của 1 subject > 0.25.
+- R7 Muri cổ tay (sàng lọc 2D). R8 lệch thời gian chuẩn: |dur − std_s|/std_s > ngưỡng (từ tài liệu RAG, mặc định 30%);
+  nhanh hơn chuẩn → severity info. std_s + ngưỡng: `kaizen/rag/report_queries.resolve_standards` (station.yaml
+  `std_time_s` > bảng "TG chuẩn" trong store), mỗi giá trị kèm citation → `findings.json["standards"]`.
+- Nhóm per-video (R2–R5, R7, R8) chạy với 1 trial; 3M tổng hợp (R1, R6) cần nhiều trial.
 Xếp hạng: `impact_s_per_cycle × {high:1, med:0.6, low:0.3}` giảm dần.
 
 ### 07_explain.py — findings + KB → explained.json
@@ -180,6 +194,11 @@ Xếp hạng: `impact_s_per_cycle × {high:1, med:0.6, low:0.3}` giảm dần.
 - Test: `python -m pytest tests/test_validator.py` (không gọi mạng).
 
 ### 08_report.py — tất cả → <run>/report/report.md (+ ảnh PNG)
+Cấu trúc hiện tại (truy vết theo tài liệu RAG): 1 Tóm tắt & đề xuất ≤ 6 dòng · 2 Tổng quan · 3 Bảng bước + TG chuẩn/Lệch %/
+Nguồn chuẩn · 4 Timeline + Yamazumi · 5 3M tổng hợp (run < 2 trial → 1 dòng hoãn) · 6 Muri · 7 Findings (Quan sát ≤2 câu /
+Giả thuyết 1 câu / Đề xuất ≤2 câu + ECRS + Đo lại + Nguồn) · 8 Tài liệu tham chiếu (1 nhãn `[WI-EGT-001 · tr.1]` ↔ 1 dòng,
+`trace_check` kiểm 2 chiều) · 9 Giả định & giới hạn. 07 mặc định prompt `explain_v2` (+ context bảng bước), RAG tự bật
+khi store có chunk; explained.json có `citations_detail`. Danh sách gốc bên dưới là yêu cầu ban đầu.
 - Bảng tổng: cycle time từng trial, %VA, idle, pick count, (nếu có) sai số vs oracle.
 - Gantt timeline từng trial (matplotlib broken_barh, màu theo bước) → PNG.
 - Yamazumi: bar chồng dur các bước theo trial, kẻ ngang cycle_time_target nếu có → PNG.
@@ -217,16 +236,20 @@ data/keypoints/<stem>_<model>.npz          # KHÔNG thuộc run — tái dùng g
 - So sánh: `python src/tools/compare_runs.py --list` · `python src/tools/compare_runs.py <run1> <run2>` ·
   `python src/tools/compare_runs.py --last 2` → bảng Markdown cycle time, %VA, idle, F1@IoU0.5, MAE, pass rate LLM.
 
-## UI demo (`app/`, Streamlit)
-- `streamlit run app/ui.py`: dashboard 8 tab (Tổng quan · Video & Timeline · So sánh video · Muda · Mura & Muri ·
-  Findings & Copilot · So sánh run · Chạy pipeline). Deep link: `?run=<run_id>&trial=<trial>`.
-- So sánh video (`app/video_compare.py`): 2 video overlay cạnh nhau, phát/tua/tốc độ chung, "Nhảy tới bước" đưa mỗi
-  video tới đầu bước theo mốc của chính trial (mặc định căn theo nhãn oracle), khoá đồng bộ giữ độ lệch B − A;
-  bên nào thiếu bước → báo và tắt khoá. UI CHỈ ĐỌC artifact của run qua `app/data_access.py` (cache theo mtime) — không tính
-  lại chỉ số; artifact thiếu → cảnh báo, không crash. Màu bước dùng chung `src/overlay.step_color` (Gantt, Yamazumi, video).
-- Video overlay: `python src/tools/render_demo.py --run <id|latest> --trial U001_V001` → `<run>/report/demo_<trial>.mp4`
-  (H.264 + faststart qua imageio-ffmpeg; mp4v của OpenCV KHÔNG phát được trên trình duyệt).
-- So sánh run dùng chung hàm `compare_runs.compare()` với CLI.
+## UI demo (`app/`, Streamlit) — mô hình "1 video = 1 dự án"
+- `streamlit run app/ui.py` (demo: `KAIZEN_DEMO=1 streamlit run app/ui.py`). 4 trang, mỗi trang 1 nút primary:
+  📁 Dự án (thêm video HA4M/upload/thư mục ảnh, chọn ≥2 → Tính 3M) · 🎬 Chi tiết dự án (▶ Chạy full luồng 6 bước,
+  video overlay, Kaizen Brain: bảng bước + TG chuẩn/nguồn, findings, tài liệu đã dùng, benchmark) · 📚 Tài liệu (RAG ingest +
+  thử truy vấn) · 📊 So sánh 3M (Mura/Muda/Muri/R1-R6 nhiều video + ghi chú người đánh giá).
+- `app/data_access.py` là lớp DUY NHẤT gọi backend; UI không mở file, không tính chỉ số (kể cả 3M → `aggregate_3m`).
+- Backend: `kaizen/core/projects.py` (outputs/projects/<id>/{project.yaml, status.json, runs/, media/demo.mp4};
+  khoá job toàn app `.job.json`; CLI `adopt <run_id>`, `prepare-demo --trials U001_V001,...`), `kaizen/core/pipeline.py`
+  (6 bước gọi đúng stage src/01–08 với KAIZEN_RUNS_DIR=<project>/runs, chạy nền; thiếu key → dry-run + ghi chú),
+  `kaizen/skeleton/render.py` (overlay mọi nguồn, banner ghi nguồn nhãn), `kaizen/analyzer/aggregate.py` (3M nhiều video,
+  dùng lại compute_mura + R1/R6 → outputs/aggregates/<agg_id>/).
+- Demo mode: dự án đã tính sẵn (prepare-demo) → tiến độ MÔ PHỎNG ~12–15 s, KHÔNG gọi pipeline, video theo nhãn chuẩn;
+  badge `⚡ Demo — kết quả tính sẵn…` luôn hiện. Video mới vẫn chạy THẬT (không bao giờ bịa số).
+- Video overlay CLI cũ vẫn dùng được: `python src/tools/render_demo.py --run <id|latest> --trial U001_V001`.
 
 ## Nạp dữ liệu mới (batch)
 - `python src/01_extract.py --data-root data/ha4m_new --subjects all [--trials all] [--limit N] [--force]`:

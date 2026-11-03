@@ -5,6 +5,9 @@
 
     EXPLAIN_V1         giải thích findings với KB/SOP tĩnh (citation KB-xx / SOP-xx)
     EXPLAIN_RAG_V1     giải thích findings với chunk truy xuất từ RAG store (citation = chunk_id)
+    EXPLAIN_V2         như RAG_V1 + <context> (bảng bước rút gọn id/dur/std/lệch + zone), schema gọn cho report:
+                       observation ≤2 câu, hypothesis 1 câu, recommendation ≤2 câu, ecrs E|C|R|S, remeasure ≤12 từ (≤20 tiếng)
+    EXPLAIN_V2_KB      EXPLAIN_V2 khi RAG store rỗng: KB/SOP tĩnh, citation KB-xx / SOP-xx
     ONLY_JSON_V1       hỏi lại khi response không parse được
     RETRY_FEEDBACK_V1  gọi lại kèm thông báo lỗi validator
     EXTRACT_STEPS_V1   trích bước chuẩn từ tài liệu SOP
@@ -61,6 +64,43 @@ Quy tắc bắt buộc:
     user="<documents>\n{documents}\n</documents>\n\n<findings>\n{findings_json}\n</findings>\n\n"
          "Giải thích TỪNG finding theo đúng định dạng JSON đã quy định; citations chỉ gồm chunk_id.")
 
+_RULES_V2 = """1. Chỉ dùng con số CÓ SẴN trong JSON của finding đó hoặc trong <context> (bảng bước của trial tương ứng), chép đúng
+   giá trị (được làm tròn 1 chữ số thập phân). KHÔNG tự tính, cộng, trừ, quy đổi hay tạo số mới; không có số phù hợp thì
+   diễn đạt bằng lời.
+2. observation: TỐI ĐA 2 câu — hiện tượng đo được.
+3. hypothesis: ĐÚNG 1 câu — nguyên nhân, nêu rõ là giả thuyết.
+4. recommendation: TỐI ĐA 2 câu — hành động cải tiến cụ thể (gắn với bước/khay/tay trong finding).
+5. ecrs: đúng 1 chữ cái "E" | "C" | "R" | "S" (Eliminate / Combine / Rearrange / Simplify) của đề xuất chính.
+6. remeasure: cách kiểm chứng sau cải tiến, TỐI ĐA 12 từ (≤ 20 tiếng đếm theo khoảng trắng — viết càng ngắn càng tốt);
+   không chứa số mới. Ví dụ: "Đo lại thời lượng bước này sau khi dời khay".
+7. Viết tiếng Việt, gọn, không lời dẫn, không chữ thừa. Dùng dấu chấm cho số thập phân; P90/IoU/CV giữ nguyên dạng."""
+
+EXPLAIN_V2 = PromptTemplate(
+    id="explain_v2",
+    system="""Bạn là kỹ sư Kaizen/IE hỗ trợ phân tích trạm lắp ráp. Bạn CHỈ diễn giải các finding đã được code tính sẵn,
+dựa trên các đoạn tài liệu (chunk) truy xuất cho từng finding (work instruction, guideline, KB).
+Quy tắc bắt buộc:
+""" + _RULES_V2 + """
+8. citations: CHỈ dùng chunk_id có trong <documents> (dạng DOC-xxxxxx:pN:cM), ít nhất 1 chunk_id cho mỗi finding,
+   ưu tiên "relevant_chunks" của finding đó. KHÔNG viết số trang hay mã tài liệu trong văn bản — nguồn chỉ nằm trong citations.
+9. Chỉ trả về JSON array, không markdown:
+[{"finding_id": "F01", "observation": "...", "hypothesis": "...", "recommendation": "...", "ecrs": "R", "remeasure": "...", "citations": ["DOC-3f9a2c:p2:c1"]}]""",
+    user="<documents>\n{documents}\n</documents>\n\n<context>\n{context_json}\n</context>\n\n"
+         "<findings>\n{findings_json}\n</findings>\n\n"
+         "Diễn giải TỪNG finding theo đúng schema JSON đã quy định; citations chỉ gồm chunk_id.")
+
+EXPLAIN_V2_KB = PromptTemplate(
+    id="explain_v2_kb",
+    system="""Bạn là kỹ sư Kaizen/IE hỗ trợ phân tích trạm lắp ráp. Bạn CHỈ diễn giải các finding đã được code tính sẵn.
+Quy tắc bắt buộc:
+""" + _RULES_V2 + """
+8. citations: chỉ dùng ID có trong tài liệu (dạng KB-xx hoặc SOP-xx), ít nhất 1 ID cho mỗi finding.
+9. Chỉ trả về JSON array, không markdown:
+[{"finding_id": "F01", "observation": "...", "hypothesis": "...", "recommendation": "...", "ecrs": "R", "remeasure": "...", "citations": ["KB-03"]}]""",
+    user="<kaizen_kb>\n{kb_text}\n</kaizen_kb>\n\n<sop>\n{sop_text}\n</sop>\n\n<context>\n{context_json}\n</context>\n\n"
+         "<findings>\n{findings_json}\n</findings>\n\n"
+         "Diễn giải TỪNG finding theo đúng schema JSON đã quy định.")
+
 ONLY_JSON_V1 = PromptTemplate(
     id="only_json_v1", system="",
     user="Response trước không parse được thành JSON. Chỉ trả JSON array, không markdown, không lời dẫn.")
@@ -93,7 +133,8 @@ ONLY_JSON = ONLY_JSON_V1.user
 
 DRY_CITES = {"slow_step": ["KB-10", "KB-12"], "extra_pick": ["KB-04", "KB-07"], "long_idle": ["KB-03", "KB-16"],
              "sequence_deviation": ["KB-14", "SOP-20"], "hand_imbalance": ["KB-05", "KB-15"],
-             "high_variation": ["KB-10", "KB-01"], "wrist_posture": ["KB-13", "KB-01"]}
+             "high_variation": ["KB-10", "KB-01"], "wrist_posture": ["KB-13", "KB-01"],
+             "std_time_slow": ["KB-10", "KB-11"], "std_time_fast": ["KB-10", "KB-14"]}
 
 
 def findings_json(findings: list[dict]) -> str:

@@ -241,7 +241,7 @@ class Finding(Artifact):
     """1 finding rule-based (findings.json → findings[])."""
     id: str
     type: str
-    severity: Literal["high", "med", "low"]
+    severity: Literal["high", "med", "low", "info"]
     evidence: dict[str, Any]
     impact_s_per_cycle: Optional[Num] = None
     confidence: Literal["high", "med", "low"]

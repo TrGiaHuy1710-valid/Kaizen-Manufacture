@@ -126,6 +126,34 @@ def test_chunking_heading_aware_sizes_overlap():
     assert len(long) >= 2
 
 
+def test_chunking_short_sections_and_table_lead():
+    body = "nội dung mục " * 20                                                     # 60 token ≥ section_min
+    blocks = [Block("heading", "Tiêu đề", 1, 1), Block("text", "Dẫn bảng ngắn.", 1),
+              Block("table", "|a|b|\n|---|---|\n|1|2|", 1),
+              Block("heading", "1. QC", 1, 2), Block("text", body, 1),
+              Block("heading", "2. An toàn", 1, 2), Block("text", body, 1)]
+    ch = chunk_document(ParsedDoc("DOC-abcdef", "T", "t.pdf", "pdf", 1, blocks))
+    assert [(c.kind, c.section) for c in ch] == [("table", "Tiêu đề"), ("text", "Tiêu đề > 1. QC"),
+                                                 ("text", "Tiêu đề > 2. An toàn")]
+    assert ch[0].text.startswith("Tiêu đề\nDẫn bảng ngắn.\n|a|b|")              # đoạn dẫn đi cùng bảng
+
+
+def test_pdf_running_footer_dropped_and_placeholder_title(tmp_path):
+    import pymupdf
+    pdf = pymupdf.open()
+    for i in (1, 2):
+        pg = pdf.new_page()
+        if i == 1:
+            pg.insert_text((72, 90), "Quy trinh lap rap", fontsize=18)
+        pg.insert_text((72, 140), f"Noi dung trang {i} co du chu de doc.", fontsize=10)
+        pg.insert_text((72, pg.rect.height - 20), f"Tai lieu noi bo - Trang {i}", fontsize=7)
+    pdf.set_metadata({"title": "(anonymous)"})
+    d = parse_document(data=pdf.tobytes(), filename="wi.pdf")
+    assert d.title == "Quy trinh lap rap"
+    assert [b.text for b in d.blocks if "Trang" in b.text and "Tai lieu" in b.text] == []
+    assert any("Noi dung trang 2" in b.text for b in d.blocks)
+
+
 # ---------------------------------------------------------------- 4b store / retrieval
 def test_ingest_idempotent_and_metadata(store, sop_pdf):
     r = store.res
@@ -169,7 +197,7 @@ def test_extract_steps_dry_run_12_in_order(store, tmp_path):
 
 def test_extract_steps_llm_verified_by_code(store, tmp_path, scripted):
     chunks = store.get_chunks(store.res.doc_id)
-    p1 = next(c.chunk_id for c in chunks if c.page == 1)
+    p1 = next(c.chunk_id for c in chunks if c.page == 1 and "Bước 3" in c.text)
     p2 = next(c.chunk_id for c in chunks if c.page == 2 and c.kind == "text")
     steps = [{"id": i, "name": step_name(s), "order": i, "zone_hint": None, "safety_note": None,
               "std_time_s": STD_TIME[i - 1], "source_chunk_id": p1 if i <= 6 else p2} for i, s in enumerate(STEPS, 1)]
@@ -242,7 +270,7 @@ def test_cli_07_use_rag_on_existing_run(tmp_path, sop_pdf):
     ex = json.loads((run / "explained" / "explained.json").read_text())
     assert ex["pass_rate"] == 1.0 and all(CHUNK_ID.match(c) for x in ex["explanations"] for c in x["final"]["citations"])
     man = json.loads((run / "manifest.json").read_text())
-    assert man["stages"]["07_explain"]["prompt"] == "explain_rag_v1" and man["stages"]["07_explain"]["rag"]["chunks"] > 0
+    assert man["stages"]["07_explain"]["prompt"] == "explain_v2" and man["stages"]["07_explain"]["rag"]["chunks"] > 0
     s = DocumentStore(tmp_path / "store", HashEmbedder())
     bad = dict(ex["explanations"][0]["final"], citations=["DOC-ffffff:p1:c0"])
     assert validate(bad, F01, set(), s.has_chunk)["status"] == "failed"

@@ -3,18 +3,23 @@
 #   bash run_all.sh [--oracle] [--model mediapipe|rtmw] [--subjects U001,U002|all] [--trials V001|all]
 #                   [--provider gemini|anthropic|openai|dry-run] [--llm-model NAME] [--dry-run] [--tag TEXT]
 #                   [--data-root data/ha4m[,data/ha4m_new]] [--run RUN_ID] [--force]
+#                   [--segmenter rule|mstcn] [--segmenter-model models/segmenter/<name>]
 # --oracle   : 05–08 dùng bước từ nhãn HA4M (mặc định: bước dự đoán; eval vs nhãn vẫn tính nếu có nhãn)
 # --provider : LLM cho 07 (mặc định env LLM_PROVIDER, không có thì gemini); --dry-run = --provider dry-run
 # --tag      : nối vào run_id, vd _demo1
 # --run      : ghi vào run đã có thay vì tạo run mới
 # --force    : chạy lại cả 00/01 (trích keypoints chậm ~6 phút/video). 02–08 luôn tính lại trong run.
+# --segmenter: cách tách bước ở 04 predicted — rule (mặc định) | mstcn (model đã train, xem docs/training.md)
 # Python: dùng $PY nếu đặt, mặc định `python` (hãy `conda activate kaizen-py311` trước).
+# Key/LLM: tự nạp ./.env nếu có (ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, LLM_PROVIDER, LLM_MODEL).
 set -euo pipefail
 cd "$(dirname "$0")"
+[[ -f .env ]] && { set -a; . ./.env; set +a; }   # .env đã gitignore; tham số CLI vẫn ưu tiên hơn
 
 PY="${PY:-python}"
 MODEL=mediapipe; ORACLE=0; FORCE=""; SUBJ=""; TRI=""; ROOT="${HA4M_ROOT:-data/ha4m}"
-PROVIDER="${LLM_PROVIDER:-gemini}"; LLM_MODEL=""; TAG=""; RUN_ID=""
+PROVIDER="${LLM_PROVIDER:-gemini}"; LLM_MODEL="${LLM_MODEL:-}"; TAG=""; RUN_ID=""
+SEGMENTER="${KAIZEN_SEGMENTER:-rule}"; SEG_MODEL="${KAIZEN_SEGMENTER_MODEL:-latest}"
 ORIG_ARGS="$*"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,6 +28,8 @@ while [[ $# -gt 0 ]]; do
     --subjects) SUBJ="$2"; shift 2 ;;
     --trials) TRI="$2"; shift 2 ;;
     --provider) PROVIDER="$2"; shift 2 ;;
+    --segmenter) SEGMENTER="$2"; shift 2 ;;
+    --segmenter-model) SEG_MODEL="$2"; shift 2 ;;
     --llm-model) LLM_MODEL="$2"; shift 2 ;;
     --dry-run) PROVIDER="dry-run"; shift ;;
     --tag) TAG="$2"; shift 2 ;;
@@ -71,7 +78,8 @@ echo "[run_all] run: $RUN_ID → outputs/runs/$RUN_ID/"
 step "02 features"  $PY src/02_features.py "${RUN[@]}" "${SEL[@]}" --model "$MODEL" --force
 step "03 events"    $PY src/03_events.py "${RUN[@]}" "${SEL[@]}" --force --print-timeline
 step "04 oracle"    $PY src/04_steps.py "${RUN[@]}" "${SEL[@]}" --oracle --force
-step "04 predicted" $PY src/04_steps.py "${RUN[@]}" "${SEL[@]}" --force
+step "04 predicted ($SEGMENTER)" $PY src/04_steps.py "${RUN[@]}" "${SEL[@]}" --force \
+     --segmenter "$SEGMENTER" --segmenter-model "$SEG_MODEL" --pose-model "$MODEL"
 step "05 metrics ($SOURCE)" $PY src/05_metrics.py "${RUN[@]}" "${SEL[@]}" --source "$SOURCE" --force
 step "06 findings"  $PY src/06_findings.py "${RUN[@]}" --force
 step "07 explain ($PROVIDER)" $PY src/07_explain.py "${RUN[@]}" --force "${LLM_ARGS[@]}"

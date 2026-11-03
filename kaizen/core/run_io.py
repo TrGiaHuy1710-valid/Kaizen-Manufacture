@@ -2,6 +2,7 @@
 
 run_id = <YYYYmmdd-HHMMSS>_<pred|oracle>_<posemodel>_<anthropic|gemini|dry>[_<tag>]  (trùng → thêm -2, -3...)
 outputs/runs/LATEST = file text chứa run_id gần nhất (không dùng symlink để chạy được cả Windows).
+Thư mục runs đổi được bằng env KAIZEN_RUNS_DIR (vd outputs/projects/<id>/runs — mỗi dự án video giữ run riêng).
 Keypoints (.npz) KHÔNG nằm trong run — vẫn ở data/keypoints/ để tái dùng giữa các run.
 
 CLI (dùng trong run_all.sh):
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -25,8 +27,13 @@ from pathlib import Path
 
 import yaml
 
-RUNS = Path("outputs/runs")
+RUNS = Path("outputs/runs")                # mặc định; dùng runs_dir() (đọc env KAIZEN_RUNS_DIR mỗi lần gọi)
 LATEST = RUNS / "LATEST"
+
+
+def runs_dir() -> Path:
+    """Thư mục chứa các run: env KAIZEN_RUNS_DIR hoặc outputs/runs."""
+    return Path(os.environ.get("KAIZEN_RUNS_DIR") or RUNS)
 STAGES = ("features", "events", "steps", "metrics", "findings", "explained", "report")
 LLM_TAG = {"anthropic": "anthropic", "gemini": "gemini", "openai": "openai", "dry-run": "dry", "dry": "dry"}
 
@@ -108,8 +115,9 @@ def _safe(s: str) -> str:
 
 def new_run(cfg_path: str | Path, *, source: str, pose_model: str, llm: str, llm_model: str | None = None,
             tag: str = "", data_root: str | None = None, subjects: str = "", trials: str = "",
-            cmd: list[str] | None = None) -> RunContext:
-    """Tạo outputs/runs/<run_id>/ + manifest.json + bản sao station.yaml, cập nhật LATEST."""
+            cmd: list[str] | None = None, root: str | Path | None = None) -> RunContext:
+    """Tạo <runs>/<run_id>/ + manifest.json + bản sao station.yaml, cập nhật LATEST (root: thư mục runs, mặc định runs_dir())."""
+    RUNS = Path(root) if root else runs_dir()  # noqa: N806
     base = f"{dt.datetime.now():%Y%m%d-%H%M%S}_{source}_{_safe(pose_model)}_{LLM_TAG.get(llm, _safe(llm))}"
     if tag:
         base += f"_{_safe(tag)}"
@@ -132,14 +140,15 @@ def new_run(cfg_path: str | Path, *, source: str, pose_model: str, llm: str, llm
         selection={"subjects": subjects or "all", "trials": trials or "all"},
         config={"path": str(cfg_path), "snapshot": "station.yaml", "station": station},
         trials={}, stages={})
-    LATEST.write_text(run_id + "\n", encoding="utf-8")
+    (RUNS / "LATEST").write_text(run_id + "\n", encoding="utf-8")
     return ctx
 
 
 def latest_id() -> str | None:
-    """run_id trong outputs/runs/LATEST (None nếu chưa có/không tồn tại)."""
+    """run_id trong <runs>/LATEST (None nếu chưa có/không tồn tại)."""
+    RUNS = runs_dir()  # noqa: N806
     try:
-        rid = LATEST.read_text(encoding="utf-8").strip()
+        rid = (RUNS / "LATEST").read_text(encoding="utf-8").strip()
         return rid if rid and (RUNS / rid).is_dir() else None
     except FileNotFoundError:
         return None
@@ -147,6 +156,7 @@ def latest_id() -> str | None:
 
 def open_run(run: str) -> RunContext:
     """RunContext theo run_id hoặc 'latest' (FileNotFoundError nếu không có)."""
+    RUNS = runs_dir()  # noqa: N806
     rid = latest_id() if run == "latest" else run
     if not rid or not (RUNS / rid).is_dir():
         raise FileNotFoundError(f"không thấy run '{run}' trong {RUNS}")
@@ -164,6 +174,7 @@ def resolve(run: str | None, tag: str) -> RunContext | None:
         print(f"[{tag}] run: {ctx.run_id}")
         return ctx
     rid = latest_id()
+    RUNS = runs_dir()  # noqa: N806
     if rid:
         print(f"[{tag}] run: {rid} (latest)")
         return RunContext(rid, RUNS / rid)
@@ -174,6 +185,7 @@ def resolve(run: str | None, tag: str) -> RunContext | None:
 
 def list_runs() -> list[dict]:
     """Manifest của mọi run (theo tên thư mục)."""
+    RUNS = runs_dir()  # noqa: N806
     out = []
     for d in sorted(RUNS.glob("*/")) if RUNS.exists() else []:
         m = RunContext(d.name, d).manifest

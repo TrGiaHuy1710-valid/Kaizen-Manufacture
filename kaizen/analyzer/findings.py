@@ -15,7 +15,13 @@ Rule:
      impact = Σ thời gian idle của tay rảnh ở các bước bị gắn cờ.
   R6 biến động lớn: CV cycle time giữa các trial của 1 subject > 0.25 (cần ≥ 2 trial). impact = std.
   R7 Muri cổ tay (sàng lọc 2D): % thời gian lệch góc > muri_dev_deg vượt muri_pct_threshold. impact = 0.
-Severity: impact/cycle ≥ 5% → high, ≥ 2% → med, còn lại low (R4 oracle-mismatch & R7 theo mức riêng).
+  R8 lệch thời gian chuẩn (per-video, chạy với 1 trial): lệch % = (dur − std_s)/std_s; |lệch| > ngưỡng
+     (tài liệu, vd WI "chênh lệch kéo dài trên 30%"; không có → std_dev_threshold_pct / 30%).
+     Chậm → std_time_slow, impact = dur − std_s. Nhanh hơn chuẩn đáng kể → std_time_fast, severity info
+     ("ứng viên cập nhật chuẩn / kiểm tra bỏ sót thao tác"), impact = 0. Không có std_s → bước đó bỏ qua.
+     std_s + ngưỡng lấy từ `standards` (kaizen.rag.report_queries.resolve_standards) hoặc station.yaml std_time_s.
+Severity: impact/cycle ≥ 5% → high, ≥ 2% → med, còn lại low (R4 oracle-mismatch & R7 theo mức riêng; R8 nhanh = info).
+Nhóm: per-video (R2, R3, R4, R5, R7, R8) chạy với 1 trial; tổng hợp 3M (R1, R6) cần nhiều trial.
 Xếp hạng: impact_s_per_cycle × {high:1, med:0.6, low:0.3} giảm dần.
 """
 from __future__ import annotations
@@ -67,6 +73,7 @@ class RuleContext:
     cfg: dict
     events_loader: Callable[[str], pd.DataFrame | None] = lambda st: None
     pred_info_loader: Callable[[str], dict] = lambda st: {}
+    standards: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     raw: list[dict] = field(default_factory=list)
     _ev_cache: dict = field(default_factory=dict, repr=False)
@@ -311,6 +318,52 @@ def _r7(ctx: RuleContext) -> None:
                     impact_s_per_cycle=0.0, severity="med" if p > 2 * pct_thr else "low", confidence="low")
 
 
+def std_standards(ctx: RuleContext) -> tuple[dict[int, dict], dict]:
+    """({step_id: {std_s, source, citation}}, ngưỡng std_dev_pct) từ ctx.standards, thiếu → station.yaml / mặc định."""
+    std = {int(k): v for k, v in ((ctx.standards or {}).get("std_times") or {}).items()}
+    if not std:
+        std = {int(s["id"]): {"std_s": float(s["std_time_s"]), "source": "station.yaml", "citation": None}
+               for s in ctx.cfg.get("steps", []) if s.get("std_time_s") is not None}
+    thr = ((ctx.standards or {}).get("thresholds") or {}).get("std_dev_pct") or {
+        "value": float(ctx.cfg.get("std_dev_threshold_pct", 30.0)), "source": "default", "citation": None}
+    return std, thr
+
+
+def _short(cit: dict | None, fallback: str) -> str:
+    return (cit or {}).get("short") or fallback
+
+
+def _r8(ctx: RuleContext) -> None:
+    """R8 — Lệch thời gian chuẩn: |dur − std_s|/std_s > ngưỡng (tài liệu hoặc 30%); nhanh hơn chuẩn → info."""
+    std, thr = std_standards(ctx)
+    if not any(v.get("std_s") for v in std.values()):
+        ctx.notes.append("R8 bỏ qua: không có thời gian chuẩn (station.yaml std_time_s hoặc bảng TG chuẩn trong tài liệu RAG)")
+        return
+    lim = float(thr["value"])
+    thr_src = _short(thr.get("citation"), "ngưỡng mặc định hệ thống")
+    for st, m in ctx.trials.items():
+        ct = m["cycle_time_s"]["value"]
+        for row in m["steps"]["rows"]:
+            sid = int(row["step_id"])
+            std_s = (std.get(sid) or {}).get("std_s")
+            if not std_s:
+                continue
+            dev = (row["dur_s"] - std_s) / std_s * 100
+            if abs(dev) <= lim:
+                continue
+            slow = dev > 0
+            imp = max(row["dur_s"] - std_s, 0.0)
+            ctx.add(type="std_time_slow" if slow else "std_time_fast", rule="R8", trials=[st],
+                    evidence=dict(metric=f"lệch thời lượng bước {sid} so với TG chuẩn", value=r(dev, 1), unit="%",
+                                  step_id=sid, step_name=row["name"], dur_s=row["dur_s"], std_s=std_s,
+                                  deviation_pct=r(dev, 1), threshold_pct=lim,
+                                  std_source=_short(std[sid].get("citation"), "station.yaml"), threshold_source=thr_src,
+                                  **({} if slow else {"note": "nhanh hơn chuẩn — ứng viên cập nhật chuẩn / kiểm tra bỏ sót thao tác"}),
+                                  timestamps=[[row["start_s"], row["end_s"]]]),
+                    impact_s_per_cycle=r(imp), severity=severity(imp, ct) if slow else "info",
+                    confidence="high" if ctx.source == "oracle" else "med")
+
+
 RULES: list[Rule] = [
     Rule("R1", "slow_step", "Bước chậm bất thường: dur bước > median + 2·MAD giữa các trial cùng subject (≥ 3 trial; thiếu thì so toàn bộ).", _r1),
     Rule("R2", "extra_pick", "Pick dư: số pick vào 1 zone trong chu kỳ > Σ reps các bước SOP dùng zone đó.", _r2),
@@ -319,7 +372,10 @@ RULES: list[Rule] = [
     Rule("R5", "hand_imbalance", "Mất cân bằng tay: trong 1 bước, 1 tay idle > 60% trong khi tay kia active > 60%.", _r5),
     Rule("R6", "high_variation", "Biến động lớn: CV cycle time giữa các trial của 1 subject > 0.25 (≥ 2 trial).", _r6),
     Rule("R7", "wrist_posture", "Muri cổ tay (sàng lọc 2D): % thời gian lệch góc > muri_dev_deg vượt muri_pct_threshold.", _r7),
+    Rule("R8", "std_time_slow", "Lệch thời gian chuẩn: |dur − std_s|/std_s > ngưỡng tài liệu (mặc định 30%); nhanh hơn chuẩn → info.", _r8),
 ]
+PER_VIDEO_RULES = ("R2", "R3", "R4", "R5", "R7", "R8")
+AGGREGATE_RULES = ("R1", "R6")            # 3M tổng hợp — cần ≥ 2–3 trial
 
 
 @dataclass
@@ -327,11 +383,13 @@ class FindingsResult:
     """Kết quả detect_findings: findings đã xếp hạng + gán id F01…, ghi chú rule."""
     findings: list[Finding]
     notes: list[str]
+    standards: dict | None = None
 
     def to_json_dict(self, source: str) -> dict:
-        """Nội dung findings.json."""
+        """Nội dung findings.json (+ "standards": std_s/ngưỡng kèm citation nếu có)."""
+        extra = {"standards": self.standards} if self.standards is not None else {}
         return FindingsReport(source=source, rank_formula=RANK_FORMULA, notes=self.notes,
-                              findings=self.findings).to_json_dict()
+                              findings=self.findings, **extra).to_json_dict()
 
 
 def rank(raw: list[dict]) -> list[Finding]:
@@ -362,11 +420,11 @@ def _read_pred_info(d: Path, st: str) -> dict:
 def detect_findings(metrics_all: MetricsReport | dict, rules_cfg: StationLike, *,
                     events: Mapping[str, pd.DataFrame | None] | Path | None = None,
                     pred_info: Mapping[str, dict] | Path | None = None,
-                    rules: list[Rule] | None = None) -> FindingsResult:
+                    rules: list[Rule] | None = None, standards: dict | None = None) -> FindingsResult:
     """metrics.json (mọi trial + mura) + config ngưỡng → findings xếp hạng.
 
     events / pred_info: dict theo stem, hoặc thư mục (<run>/events, <run>/steps), hoặc None (rule cần chúng
-    chỉ mất timestamps / bỏ phần pred).
+    chỉ mất timestamps / bỏ phần pred). standards: {std_times, thresholds} (resolve_standards) cho R8.
     """
     m = metrics_all.to_json_dict() if isinstance(metrics_all, MetricsReport) else metrics_all
     ev_loader = (_dir_loader(events, load_events) if not isinstance(events, Mapping)
@@ -374,10 +432,10 @@ def detect_findings(metrics_all: MetricsReport | dict, rules_cfg: StationLike, *
     pi_loader = (_dir_loader(pred_info, _read_pred_info) if not isinstance(pred_info, Mapping)
                  else (lambda st: pred_info.get(st, {})))
     ctx = RuleContext(trials=m["trials"], source=m["meta"]["source"], mura=m["mura"], cfg=as_cfg(rules_cfg),
-                      events_loader=ev_loader, pred_info_loader=pi_loader)
+                      events_loader=ev_loader, pred_info_loader=pi_loader, standards=standards or {})
     for rule in RULES if rules is None else rules:
         rule.check(ctx)
-    return FindingsResult(rank(ctx.raw), ctx.notes)
+    return FindingsResult(rank(ctx.raw), ctx.notes, standards)
 
 
 def run_rules(metrics: dict, cfg: dict, steps_dir: Path, events_dir: Path) -> tuple[list[dict], list[str]]:

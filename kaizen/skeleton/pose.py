@@ -4,9 +4,12 @@ Thêm backend mới = thêm 1 entry vào POSE_BACKENDS (tên → factory(**opts)
     mediapipe        : 33 pose + 21×2 tay = 75 điểm (tay ghép theo cổ tay pose gần nhất); cần models/*.task (setup.sh)
     mediapipe-heavy  : như trên, pose_landmarker_heavy
     rtmw             : RTMW wholebody 133 điểm qua rtmlib/onnxruntime
+    rtmpose-custom   : RTMPose COCO-17 từ file ONNX tuỳ chọn (vd model fine-tune trên HA4M — docs/training.md);
+                       đường dẫn: opt pose_onnx hoặc env KAIZEN_POSE_ONNX; kích thước vào W×H: KAIZEN_POSE_INPUT=192x256
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
@@ -157,6 +160,36 @@ class RTMWBackend:
         return out
 
 
+# ---------------- Backend RTMPose ONNX tuỳ chọn (model fine-tune) ----------------
+class RTMPoseCustomBackend:
+    """RTMPose top-down COCO-17 từ 1 file ONNX (export bằng mmdeploy) + detector YOLOX mặc định của rtmlib."""
+
+    def __init__(self, pose_onnx: str | None = None, pose_input_size: tuple[int, int] | None = None,
+                 det_mode: str = "balanced", device: str = "cpu"):
+        from rtmlib import Body
+        onnx = pose_onnx or os.environ.get("KAIZEN_POSE_ONNX")
+        if not onnx:
+            raise ValueError("rtmpose-custom cần file ONNX: đặt env KAIZEN_POSE_ONNX=<đường dẫn end2end.onnx>")
+        if not str(onnx).startswith("http") and not Path(onnx).exists():
+            raise FileNotFoundError(f"không thấy model pose ONNX: {onnx}")
+        if pose_input_size is None:
+            w, h = (int(v) for v in os.environ.get("KAIZEN_POSE_INPUT", "192x256").lower().split("x"))
+            pose_input_size = (w, h)
+        self.model = Body(pose=str(onnx), pose_input_size=tuple(pose_input_size), mode=det_mode,
+                          backend="onnxruntime", device=device)
+        self.names = COCO17
+        self.onnx = str(onnx)
+
+    def __call__(self, frame_bgr, ts_ms):
+        kps, scores = self.model(frame_bgr)  # (N,17,2), (N,17)
+        out = np.full((len(self.names), 3), np.nan, np.float32)
+        if kps is None or len(kps) == 0:
+            return out
+        idx = int(np.argmax(scores.sum(1)))
+        out[:, :2], out[:, 2] = kps[idx], scores[idx]
+        return out
+
+
 def draw(frame: np.ndarray, kp: np.ndarray, thr: float = 0.3) -> np.ndarray:
     """Vẽ chấm xanh cho keypoint có score ≥ thr (preview)."""
     for x, y, s in kp:
@@ -169,6 +202,8 @@ POSE_BACKENDS: dict[str, Callable[..., PoseBackend]] = {
     "mediapipe": lambda hand_crop=False, model_dir="models", **_: MediaPipeBackend(model_dir, False, hand_crop),
     "mediapipe-heavy": lambda hand_crop=False, model_dir="models", **_: MediaPipeBackend(model_dir, True, hand_crop),
     "rtmw": lambda rtmw_mode="balanced", device="cpu", **_: RTMWBackend(rtmw_mode, device),
+    "rtmpose-custom": lambda pose_onnx=None, pose_input_size=None, rtmw_mode="balanced", device="cpu", **_:
+        RTMPoseCustomBackend(pose_onnx, pose_input_size, rtmw_mode, device),
 }
 
 

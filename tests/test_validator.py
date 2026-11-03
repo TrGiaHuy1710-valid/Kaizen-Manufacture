@@ -40,6 +40,10 @@ GEMINI_REAL = {
 }
 
 
+# Cùng câu trả lời theo schema EXPLAIN_V2 (07 mặc định --prompt v2): thêm ecrs + remeasure
+GEMINI_V2 = dict(GEMINI_REAL, ecrs="R", remeasure="Đo lại % thời gian lệch cổ tay sau khi chỉnh khay")
+
+
 def test_gemini_real_case_passes():
     v = lv.validate(GEMINI_REAL, F01, KB_IDS)
     assert v["status"] == "passed", v["message"]
@@ -132,18 +136,46 @@ def _run_07(tmp_path, monkeypatch, responses: list[str]) -> dict:
 
 
 def test_retry_fixes_fabricated_number(tmp_path, monkeypatch):
-    bad = dict(GEMINI_REAL, observation="Tay trái lệch nhiều, tiết kiệm được 8.2 s.")
+    bad = dict(GEMINI_V2, observation="Tay trái lệch nhiều, tiết kiệm được 8.2 s.")
     res = _run_07(tmp_path, monkeypatch, [json.dumps([bad], ensure_ascii=False),
-                                          "```json\n" + json.dumps([GEMINI_REAL], ensure_ascii=False) + "\n```"])
+                                          "```json\n" + json.dumps([GEMINI_V2], ensure_ascii=False) + "\n```"])
     x = res["explanations"][0]
     assert x["validation"] == "passed" and len(x["attempts"]) == 2
     assert res["pass_rate"] == 1.0 and res["pass_rate_first_attempt"] == 0.0
 
 
 def test_retry_still_bad_marks_failed_after_retry(tmp_path, monkeypatch):
-    bad = json.dumps([dict(GEMINI_REAL, citations=["KB-99"])])
+    bad = json.dumps([dict(GEMINI_V2, citations=["KB-99"])])
     res = _run_07(tmp_path, monkeypatch, [bad, bad])
     assert res["explanations"][0]["validation"] == "failed_after_retry"
+
+
+def test_v2_format_three_sentence_observation_fails_then_retry(tmp_path, monkeypatch):
+    long = dict(GEMINI_V2, observation="Tay trái lệch 21.4% thời gian. Ngưỡng là 20.0%. Độ phủ 25.8%.")
+    res = _run_07(tmp_path, monkeypatch, [json.dumps([long], ensure_ascii=False), json.dumps([GEMINI_V2], ensure_ascii=False)])
+    x = res["explanations"][0]
+    a1 = x["attempts"][0]["check"]
+    assert a1["status"] == "failed" and a1["format_errors"] == ["quan sát 3 câu > 2"] and "format:" in a1["message"]
+    assert x["validation"] == "passed" and len(x["attempts"]) == 2 and x["final"]["ecrs"] == "R"
+    assert res["pass_rate_first_attempt"] == 0.0 and res["pass_rate"] == 1.0 and res["prompt"] == "explain_v2_kb"
+    assert res["citation_mode"] == "kb" and "KB-xx" in res["citation_note"]
+    assert [c["short"] for c in x["citations_detail"]] == ["[KB-13]", "[KB-16]"]
+
+
+def test_v2_format_checks_unit():
+    fmt = lv.FORMAT_V2
+    assert lv.validate(GEMINI_V2, F01, KB_IDS, fmt=fmt)["status"] == "passed"
+    gem = "Đo lại phần trăm thời gian cổ tay lệch góc sau khi điều chỉnh tư thế làm việc."   # 18 tiếng ≈ 10 từ (run thật)
+    assert lv.validate(dict(GEMINI_V2, remeasure=gem), F01, KB_IDS, fmt=fmt)["status"] == "passed"
+    assert lv.count_sentences("Lệch 21.4% (bước 2, 7). Cần xem lại!") == 2 and lv.count_sentences("") == 0
+    assert [lv.normalize_ecrs(v) for v in ("r", "S - Simplify", "Sắp xếp lại", "Loại bỏ", "X", "")] == \
+        ["R", "S", "R", "E", None, None]
+    v = lv.validate(dict(GEMINI_V2, hypothesis="A. B.", ecrs="Z", remeasure="đo " * 21), F01, KB_IDS, fmt=fmt)
+    assert v["status"] == "failed" and v["format_errors"] == ["giả thuyết 2 câu > 1",
+                                                              "đo lại 21 tiếng > 20 (≈ 12 từ, đếm theo khoảng trắng)",
+                                                              "ecrs không hợp lệ: 'Z' (cần E|C|R|S)"]
+    assert lv.validate(dict(GEMINI_V2, remeasure="Đo lại sau 50 chu kỳ"), F01, KB_IDS, fmt=fmt)["unknown_numbers"] == ["50"]
+    assert "format_errors" not in lv.validate(GEMINI_REAL, F01, KB_IDS)          # V1: không kiểm định dạng
 
 
 def test_parse_failed_does_not_crash(tmp_path, monkeypatch):

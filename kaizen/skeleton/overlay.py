@@ -69,6 +69,9 @@ def _font(size: int, bold: bool = False):
         return ImageFont.load_default()
 
 
+SOURCE_LABEL = {"oracle": "chuẩn (ground truth)", "pred": "dự đoán (baseline)"}
+
+
 @dataclass
 class OverlayData:
     """Artifact 1 trial cần để vẽ overlay (features, events, steps, cfg)."""
@@ -183,7 +186,7 @@ def draw(img: np.ndarray, t: float, od: OverlayData, scale: float = 1.0, trail_s
         parts.append(f"chu kỳ {t - cyc[0]:.1f} s / {cyc[1] - cyc[0]:.1f} s")
     parts.append(f"t = {t:.1f} s")
     if od.source:
-        parts.append(f"nguồn: {od.source}")
+        parts.append(f"nguồn nhãn: {SOURCE_LABEL.get(od.source, od.source)}")
     clock = "  ·  ".join(parts)
     pad = int(bh * 0.16)
     d.rectangle([pad, pad, pad + int(bh * 0.22), bh - pad], fill=col)

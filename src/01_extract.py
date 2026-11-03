@@ -30,7 +30,7 @@ TAG = "01"
 
 def main() -> None:
     ap = base_parser(__doc__)
-    ap.add_argument("--model", default="mediapipe", choices=["mediapipe", "mediapipe-heavy", "rtmw"])
+    ap.add_argument("--model", default="mediapipe", choices=["mediapipe", "mediapipe-heavy", "rtmw", "rtmpose-custom"])
     ap.add_argument("--out", default="data/keypoints")
     ap.add_argument("--limit", type=int, default=0, help="chỉ lấy N trial đầu mỗi subject (0 = tất cả)")
     ap.add_argument("--skip-existing", dest="skip_existing", action="store_true", default=True,

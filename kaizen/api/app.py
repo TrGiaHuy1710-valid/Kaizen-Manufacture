@@ -4,7 +4,8 @@
     GET  /documents            danh sách đã ingest
     POST /rag/query            {query, k, doc_id?} → chunks + scores (+ metadata trích dẫn)
     POST /rag/extract-steps    {doc_id, provider?, llm_model?} → StepsSpec (mỗi bước có trang nguồn)
-    POST /analyze/explain      {run_id, provider?, llm_model?, use_rag, k, save} → nội dung explained.json
+    POST /analyze/explain      {run_id, provider?, llm_model?, use_rag?, prompt, k, save} → nội dung explained.json
+                               (use_rag mặc định: bật khi store có chunk; prompt v2 + citations_detail như 07)
     GET  /runs                 các run trong outputs/runs (qua run_io)
     GET  /runs/{id}/metrics | /findings | /explained
     GET  /health               {status, providers_available, store_chunks}
@@ -17,7 +18,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,10 +27,12 @@ from pydantic import BaseModel, Field
 import kaizen
 from kaizen.core import run_io
 from kaizen.core.io import read_json, write_json
-from kaizen.llm.explain import KnowledgeBase, explain
+from kaizen.core.config import load_config
+from kaizen.llm.explain import KnowledgeBase, explain, step_context
 from kaizen.llm.prompts import EXPLAIN_RAG_V1, EXPLAIN_V1
 from kaizen.llm.providers import LLMError, MissingAPIKeyError, available_providers, get_provider
 from kaizen.rag.extract import extract_steps
+from kaizen.rag import report_queries
 from kaizen.rag.ingest import UnsupportedDocument
 from kaizen.rag.store import DocumentStore, count_chunks_fast, default_store_path
 
@@ -56,7 +59,8 @@ class ExplainIn(BaseModel):
     run_id: str = "latest"
     provider: Optional[str] = None
     llm_model: Optional[str] = None
-    use_rag: bool = False
+    use_rag: Optional[bool] = Field(None, description="None = bật khi RAG store đã có chunk")
+    prompt: Literal["v1", "v2"] = "v2"
     k: int = Field(4, ge=1, le=20)
     save: bool = Field(False, description="ghi đè <run>/explained/explained.json + manifest (như 07 --force)")
 
@@ -163,21 +167,30 @@ def create_app(store_path: str | Path | None = None, embedder: str | None = None
             raise HTTPException(404, f"run {ctx.run_id} chưa có findings/findings.json (chạy 06)")
         prov = _provider(body.provider, body.llm_model)
         retriever = None
-        if body.use_rag:
+        if body.use_rag if body.use_rag is not None else count_chunks_fast(path) > 0:
             with lock:
                 for f in (kb_path, sop_path):
                     store().ingest(f)
             retriever = store()
+        fdoc, kb = read_json(fp), KnowledgeBase.from_files(kb_path, sop_path)
+        context = None
+        mp = ctx.root / "metrics" / "metrics.json"
+        if body.prompt == "v2" and mp.exists():
+            cfg = load_config(ctx.station_path) if ctx.station_path.exists() else {}
+            context = step_context(read_json(mp), fdoc.get("standards"), zones=list(cfg.get("zones", {})))
         try:
-            res = explain(read_json(fp)["findings"], KnowledgeBase.from_files(kb_path, sop_path), prov,
-                          retriever=retriever, k=body.k, log=lambda *_: None)
+            res = explain(fdoc["findings"], kb, prov, retriever=retriever, k=body.k, log=lambda *_: None,
+                          version=body.prompt, context=context)
         except LLMError as e:
             raise HTTPException(502, f"lỗi gọi LLM: {e}") from e
+        res["citation_mode"] = "rag" if retriever is not None else "kb"
+        report_queries.annotate_citations(res, retriever, kb.ids)
         if body.save:
             write_json(ctx.path("explained", "explained.json"), res)
             ctx.update_manifest(llm={"provider": prov.name, "model": res["llm_model"]})
             ctx.record_stage("07_explain", via="api", provider=prov.name, model=res["llm_model"],
-                             prompt=(EXPLAIN_RAG_V1 if retriever else EXPLAIN_V1).id, pass_rate=res["pass_rate"])
+                             prompt=res.get("prompt") or (EXPLAIN_RAG_V1 if retriever else EXPLAIN_V1).id,
+                             pass_rate=res["pass_rate"])
         return {"run_id": ctx.run_id, "saved": body.save, **res}
 
     @app.get("/runs")

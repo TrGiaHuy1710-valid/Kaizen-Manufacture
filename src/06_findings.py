@@ -15,10 +15,13 @@ Rule:
      impact = Σ thời gian idle của tay rảnh ở các bước bị gắn cờ.
   R6 biến động lớn: CV cycle time giữa các trial của 1 subject > 0.25 (cần ≥ 2 trial). impact = std.
   R7 Muri cổ tay (sàng lọc 2D): % thời gian lệch góc > muri_dev_deg vượt muri_pct_threshold. impact = 0.
+  R8 lệch thời gian chuẩn: |dur − std_s|/std_s > ngưỡng (từ tài liệu RAG, mặc định 30%); nhanh hơn chuẩn → info.
+     std_s: station.yaml std_time_s > bảng "TG chuẩn" của tài liệu đã ingest (data/rag_store) — mỗi std kèm citation,
+     ghi vào findings.json["standards"] để 08 trình bày nguồn mà không truy vấn lại. Store rỗng → bỏ qua phần tài liệu.
 Severity: impact/cycle ≥ 5% → high, ≥ 2% → med, còn lại low (R4 oracle-mismatch & R7 theo mức riêng).
 Xếp hạng: impact_s_per_cycle × {high:1, med:0.6, low:0.3} giảm dần.
 
-    python src/06_findings.py [--force]
+    python src/06_findings.py [--force] [--rag-store data/rag_store] [--no-rag]
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ from kaizen.analyzer.findings import (CONF_W, RULES, detect_findings, load_event
 from kaizen.core.cli import base_parser, setup, stage_dir, stage_file  # noqa: E402
 from kaizen.core.config import load_config  # noqa: E402
 from kaizen.core.io import can_write, read_json, write_json  # noqa: E402
+from kaizen.rag import report_queries  # noqa: E402
 
 TAG = "06"
 
@@ -41,6 +45,9 @@ def main() -> None:
     ap.add_argument("--steps-dir", default=None, help="mặc định <run>/steps")
     ap.add_argument("--events-dir", default=None, help="mặc định <run>/events")
     ap.add_argument("--out", default=None, help="mặc định <run>/findings/findings.json")
+    ap.add_argument("--rag-store", default=None, help="mặc định env KAIZEN_RAG_STORE hoặc data/rag_store")
+    ap.add_argument("--embedder", default=None, help="e5 (mặc định, env KAIZEN_EMBEDDER) | hash | ...")
+    ap.add_argument("--no-rag", action="store_true", help="không tra tài liệu (std chỉ từ station.yaml, ngưỡng mặc định)")
     a = ap.parse_args()
     ctx = setup(a, TAG)
     out = stage_file(ctx, a.out, "findings", "findings.json", "outputs/findings/findings.json")
@@ -48,8 +55,15 @@ def main() -> None:
         return
     cfg = load_config(a.config)
     metrics = read_json(stage_file(ctx, a.metrics, "metrics", "metrics.json", "outputs/metrics/metrics.json"))
+    store = None if a.no_rag else report_queries.open_store(a.rag_store, a.embedder)
+    standards = report_queries.resolve_standards(cfg, store)
+    n_std = sum(v["std_s"] is not None for v in standards["std_times"].values())
+    thr = standards["thresholds"]["std_dev_pct"]
+    print(f"[{TAG}] chuẩn: {n_std}/{len(standards['std_times'])} bước có TG chuẩn"
+          + (f" (RAG store {store.describe()['documents']} tài liệu)" if store else " (không có RAG store)")
+          + f"; ngưỡng lệch {thr['value']:g}% — {thr['citation']['short'] if thr.get('citation') else thr['source']}")
     res = detect_findings(metrics, cfg, events=stage_dir(ctx, a.events_dir, "events", "outputs/events"),
-                          pred_info=stage_dir(ctx, a.steps_dir, "steps", "outputs/steps"))
+                          pred_info=stage_dir(ctx, a.steps_dir, "steps", "outputs/steps"), standards=standards)
     doc = res.to_json_dict(metrics["meta"]["source"])
     findings, notes = doc["findings"], doc["notes"]
     write_json(out, doc)

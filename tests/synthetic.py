@@ -5,6 +5,8 @@ Sinh trong thư mục tạm: cấu trúc HA4M giả (IDU900V001..V004, IDU901V00
 Cài sẵn bất thường: V002 bước 10 chậm gấp 3 (R1), V003 lấy dư 1 lần ở khay bước 4 (R2),
 V004 tay phải đứng yên ngoài zone 45s (R3, và CV cycle time > 0.25 → R6). U902 không có Labels.txt (phải bỏ qua oracle/eval, không crash).
 Chạy 00, 02→08 ở chế độ cũ (đường dẫn phẳng) rồi 2 run (oracle, pred) trong outputs/runs/, compare_runs, assert.
+Thêm 1 run 1 trial (U901) với station có std_time_s ghi tay: mục 3M hoãn (1 dòng), bảng bước có TG chuẩn + nguồn
+[station.yaml], R8 chạy được với 1 trial. RAG store rỗng → citation KB-xx tĩnh + ghi chú, report vẫn build.
 
     python tests/synthetic.py            # in OK/FAIL, exit code ≠ 0 nếu lỗi
     python tests/synthetic.py --keep     # giữ thư mục tạm để xem report
@@ -171,18 +173,18 @@ def main() -> int:
     ok("inspect liệt kê video thiếu nhãn", "U902_V001" in insp)
 
     # B) Chế độ run: 2 run (oracle, pred) không ghi đè nhau
-    def pipeline(source: str) -> str:
+    def pipeline(source: str, sel: tuple[str, ...] = (), extra_new: tuple[str, ...] = (), tag: str = "synth") -> str:
         rid = run(tmp, S("run_io.py"), "new", "--source", source, "--pose", "mediapipe", "--llm", "dry-run",
-                  *dr, "--tag", "synth").strip()
+                  *dr, *sel, *extra_new, "--tag", tag).strip()
         R = ["--run", rid]
-        run(tmp, S("02_features.py"), *R)
-        run(tmp, S("03_events.py"), *R, "--print-timeline")
-        run(tmp, S("04_steps.py"), *R, "--oracle")
-        run(tmp, S("04_steps.py"), *R)
-        run(tmp, S("05_metrics.py"), *R, "--source", source)
+        run(tmp, S("02_features.py"), *R, *sel)
+        run(tmp, S("03_events.py"), *R, *sel, "--print-timeline")
+        run(tmp, S("04_steps.py"), *R, *sel, "--oracle")
+        run(tmp, S("04_steps.py"), *R, *sel)
+        run(tmp, S("05_metrics.py"), *R, *sel, "--source", source)
         run(tmp, S("06_findings.py"), *R)
         run(tmp, S("07_explain.py"), *R, "--provider", "dry-run")
-        run(tmp, S("08_report.py"), *R)
+        run(tmp, S("08_report.py"), *R, *sel)
         return rid
 
     rid_o = pipeline("oracle")
@@ -221,6 +223,33 @@ def main() -> int:
     ok("report.md trong run", "Giả định & giới hạn" in rep and rid_o in rep)
     ok("report ghi trial không có nhãn", "U902_V001" in rep)
     ok("Yamazumi + assets", (out / "report" / "report_assets" / "yamazumi.png").exists())
+    from kaizen.analyzer.report import trace_check
+    heads = [ln for ln in rep.splitlines() if ln.startswith("## ")]
+    ok("report 9 mục đúng thứ tự", [h.split(".")[0] for h in heads] == [f"## {i}" for i in range(1, 10)])
+    summ = rep.split("## 1.")[1].split("## 2.")[0]
+    ok("tóm tắt ≤ 6 dòng", 0 < sum(ln.startswith("- ") for ln in summ.splitlines()) <= 6)
+    ok("3M đầy đủ khi ≥ 2 trial", "Cycle time toàn bộ" in rep and (out / "report" / "report_assets" / "cycle_time_dist.png").exists())
+    ok("findings có ECRS + Đo lại + Nguồn", rep.count("`ECRS: ") == len(fd["findings"]) == rep.count("> **Đo lại:**")
+       and rep.count("\nNguồn: [") == len(fd["findings"]))
+    ok("store rỗng → citation KB-xx + ghi chú", "[KB-" in rep and "RAG store rỗng" in rep and ex["citation_mode"] == "kb")
+    ok(f"truy vết 2 chiều khớp {trace_check(rep)}", trace_check(rep) == (set(), set()))
+
+    # C) 1 trial + std_time_s ghi tay trong station → 3M hoãn, bảng bước có nguồn chuẩn, R8 chạy per-video
+    cfg_std = station_cfg()
+    for st_ in cfg_std["steps"]:
+        st_["std_time_s"], st_["std_source"] = 2.0, "WI giả lập (ghi tay)"
+    (tmp / "config" / "station_std.yaml").write_text(yaml.safe_dump(cfg_std, sort_keys=False))
+    rid1 = pipeline("oracle", ("--subjects", "U901"), ("--config", "config/station_std.yaml"), "one")
+    out1 = tmp / "outputs" / "runs" / rid1
+    rep1 = (out1 / "report" / "report.md").read_text()
+    fd1 = json.loads((out1 / "findings" / "findings.json").read_text())
+    ok("1 trial: mục 5 = 1 dòng hoãn", "Đánh giá 3M tổng hợp: chờ đủ ≥2 video (hiện có 1)." in rep1
+       and "Cycle time toàn bộ" not in rep1 and "CV=None" not in rep1)
+    ok("1 trial: không vẽ phân bố cycle time", not (out1 / "report" / "report_assets" / "cycle_time_dist.png").exists())
+    ok("1 trial: bảng bước TG chuẩn + nguồn", "| TG chuẩn (s) | Lệch % | Nguồn chuẩn |" in rep1 and "[station.yaml]" in rep1)
+    ok("1 trial: R8 bắn (std 2s)", any(f["rule"] == "R8" for f in fd1["findings"]))
+    ok("1 trial: standards trong findings.json", fd1["standards"]["std_times"]["1"]["source"] == "station.yaml")
+    ok(f"1 trial: truy vết 2 chiều {trace_check(rep1)}", trace_check(rep1) == (set(), set()))
     cmp_out = run(tmp, str(REPO / "src" / "tools" / "compare_runs.py"), rid_o, rid_p)
     lst = run(tmp, str(REPO / "src" / "tools" / "compare_runs.py"), "--list")
     ok("compare_runs so sánh + list", rid_o in cmp_out and rid_p in cmp_out and rid_o in lst and rid_p in lst)

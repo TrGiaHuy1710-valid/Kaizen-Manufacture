@@ -164,6 +164,16 @@ class DocumentStore:
                              round(1.0 - float(dist), 4)))
         return out
 
+    def get_chunk(self, chunk_id: str) -> Chunk | None:
+        """1 chunk theo chunk_id (từ JSONL của tài liệu) — None nếu không có."""
+        doc_id = chunk_id.split(":", 1)[0]
+        return next((c for c in self.get_chunks(doc_id) if c.chunk_id == chunk_id), None)
+
+    def mtime(self) -> float:
+        """Thời điểm sửa registry (documents.json) — khoá cache truy vấn; 0 nếu store rỗng."""
+        p = self.path / "documents.json"
+        return p.stat().st_mtime if p.exists() else 0.0
+
     def has_chunk(self, chunk_id: str) -> bool:
         """chunk_id có trong store (collection hiện tại) không — dùng cho validator citation."""
         if chunk_id not in self._has_cache:

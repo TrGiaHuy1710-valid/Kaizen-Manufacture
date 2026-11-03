@@ -9,6 +9,8 @@ Validator:
   - Citation chấp nhận KB-13 / KB13 / kb-13 / [KB-13] → chuẩn hoá "KB-13" rồi đối chiếu KB/SOP.
   - Citation động (RAG): chunk_id dạng DOC-3f9a2c:p8:c3 → hợp lệ nếu `citation_exists(id)` (tồn tại trong store).
     Số trong chunk_id KHÔNG được thêm vào whitelist và bị bỏ khỏi văn bản trước khi quét số.
+  - Định dạng (prompt EXPLAIN_V2, `fmt=FORMAT_V2`): observation ≤ 2 câu, hypothesis ≤ 1 câu, recommendation ≤ 2 câu,
+    remeasure ≤ 12 từ ≈ ≤ 20 tiếng (đếm theo khoảng trắng; cũng bị quét số), ecrs ∈ E|C|R|S. Sai → lỗi "format: …", retry như lỗi validator thường.
 """
 from __future__ import annotations
 
@@ -27,6 +29,14 @@ TEXT_NUM_RE = re.compile(r"(?<![\w.,])[-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)
 RAW_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 UNIVERSAL = {0.0, 1.0, 2.0, 3.0, 100.0} | {float(i) for i in range(1, 13)}
 FIELDS = ("observation", "hypothesis", "recommendation")
+V2_FIELDS = ("ecrs", "remeasure")
+# "≤ 12 từ" tiếng Việt: từ thường 1–2 âm tiết → kiểm theo âm tiết (khoảng trắng) với trần 20 ≈ 12 từ
+# (trần 12 âm tiết làm LLM fail ngẫu nhiên với câu chỉ ~9 từ, đã thấy ở run thật)
+FORMAT_V2 = {"max_sentences": {"observation": 2, "hypothesis": 1, "recommendation": 2}, "remeasure_words": 20,
+             "ecrs": True}
+FIELD_VI = {"observation": "quan sát", "hypothesis": "giả thuyết", "recommendation": "đề xuất", "remeasure": "đo lại"}
+ECRS_WORDS = {"E": ("eliminate", "loại bỏ", "loai bo"), "C": ("combine", "kết hợp", "ket hop", "gộp"),
+              "R": ("rearrange", "sắp xếp", "sap xep", "bố trí lại"), "S": ("simplify", "đơn giản", "don gian")}
 
 
 # ---------------- KB / citation ----------------
@@ -100,11 +110,49 @@ def number_tokens(text: str) -> list[str]:
     return TEXT_NUM_RE.findall(text)
 
 
+def count_sentences(text: str) -> int:
+    """Số câu: tách sau . ! ? … có khoảng trắng / xuống dòng phía sau (21.4 không bị tách); bỏ mảnh không có chữ."""
+    parts = [p for ln in str(text).split("\n") for p in re.split(r"(?<=[.!?…])\s+", ln.strip())]
+    return sum(bool(re.search(r"[^\W\d_]", p)) for p in parts)
+
+
+def normalize_ecrs(v: object) -> str | None:
+    """'R' / 'r' / 'R - Rearrange' / 'Sắp xếp lại' → 'R'; không nhận ra → None."""
+    s = str(v or "").strip()
+    if not s:
+        return None
+    if s[0].upper() in "ECRS" and (len(s) == 1 or not s[1].isalpha()):
+        return s[0].upper()
+    low = s.lower()
+    return next((k for k, ws in ECRS_WORDS.items() if any(w in low for w in ws)), None)
+
+
+def format_errors(exp: dict, fmt: dict) -> list[str]:
+    """Lỗi định dạng theo fmt (FORMAT_V2): số câu từng trường, số từ remeasure, ecrs."""
+    errs = []
+    for k, lim in fmt.get("max_sentences", {}).items():
+        n = count_sentences(exp.get(k, ""))
+        if n == 0:
+            errs.append(f"{FIELD_VI.get(k, k)} trống")
+        elif n > lim:
+            errs.append(f"{FIELD_VI.get(k, k)} {n} câu > {lim}")
+    if fmt.get("remeasure_words"):
+        n = len(str(exp.get("remeasure", "")).split())
+        if n == 0:
+            errs.append("đo lại trống")
+        elif n > fmt["remeasure_words"]:
+            errs.append(f"đo lại {n} tiếng > {fmt['remeasure_words']} (≈ 12 từ, đếm theo khoảng trắng)")
+    if fmt.get("ecrs") and normalize_ecrs(exp.get("ecrs")) is None:
+        errs.append(f"ecrs không hợp lệ: {exp.get('ecrs')!r} (cần E|C|R|S)")
+    return errs
+
+
 def validate(exp: dict, finding: dict | None, kb_ids: set[str],
-             citation_exists: Callable[[str], bool] | None = None) -> dict:
-    """{status: passed|failed, unknown_numbers, bad_citations, citations_normalized, message}.
+             citation_exists: Callable[[str], bool] | None = None, fmt: dict | None = None) -> dict:
+    """{status: passed|failed, unknown_numbers, bad_citations, citations_normalized, message[, format_errors]}.
 
     kb_ids: ID tĩnh hợp lệ (KB-xx/SOP-xx); citation_exists: kiểm chunk_id động (RAG store) — None = không nhận chunk_id.
+    fmt: giới hạn định dạng (FORMAT_V2) — None = không kiểm (prompt V1).
     """
     if finding is None:
         return {"status": "failed", "unknown_numbers": [], "bad_citations": [], "citations_normalized": [],
@@ -125,7 +173,7 @@ def validate(exp: dict, finding: dict | None, kb_ids: set[str],
     bad_c = [str(c) for c, n in zip(nonempty, norm) if not ok(n)]
     good = [n for n in norm if ok(n)]
     allowed = whitelist(finding, [g for g in good if not is_chunk_id(g)])
-    text = " ".join(str(exp.get(k, "")) for k in FIELDS)
+    text = " ".join(str(exp.get(k, "")) for k in FIELDS + (("remeasure",) if fmt else ()))
     unknown = []
     for tok in number_tokens(text):
         if round(_to_float(tok), 1) not in allowed and tok not in unknown:
@@ -137,14 +185,21 @@ def validate(exp: dict, finding: dict | None, kb_ids: set[str],
         parts.append(f"citation không tồn tại: {bad_c}")
     if not good:
         parts.append("thiếu citation hợp lệ")
-    return {"status": "passed" if not parts else "failed", "unknown_numbers": unknown, "bad_citations": bad_c,
-            "citations_normalized": good, "message": "; ".join(parts)}
+    ferr = format_errors(exp, fmt) if fmt else []
+    if ferr:
+        parts.append("format: " + ", ".join(ferr))
+    out = {"status": "passed" if not parts else "failed", "unknown_numbers": unknown, "bad_citations": bad_c,
+           "citations_normalized": good, "message": "; ".join(parts)}
+    if fmt:
+        out["format_errors"] = ferr
+    return out
 
 
 # ---------------- Parser lượng thứ ----------------
-def parse_explanations(text: str) -> list[dict]:
+def parse_explanations(text: str, extra_fields: tuple[str, ...] = ()) -> list[dict]:
     """Parse response LLM thành list explanation. Bỏ code fence/lời dẫn, bọc object đơn thành list,
-    bỏ key thừa, điền key thiếu (đánh dấu format_warning). Raise ParseError nếu không cứu được."""
+    bỏ key thừa, điền key thiếu (đánh dấu format_warning). extra_fields: key giữ thêm (V2: ecrs, remeasure).
+    Raise ParseError nếu không cứu được."""
     data = parse_json_loose(text)
     if isinstance(data, dict):
         inner = next((v for v in data.values() if isinstance(v, list) and v and isinstance(v[0], dict)), None)
@@ -156,7 +211,7 @@ def parse_explanations(text: str) -> list[dict]:
         if not isinstance(it, dict):
             continue
         item, warn = {}, []
-        for k in ("finding_id",) + FIELDS:
+        for k in ("finding_id",) + FIELDS + tuple(extra_fields):
             v = it.get(k)
             if v is None:
                 warn.append(f"thiếu '{k}'")

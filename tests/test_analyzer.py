@@ -1,4 +1,4 @@
-"""Analyzer định lượng (kaizen.analyzer): từng rule R1–R7 bắn đúng ca dương/âm trên metrics tổng hợp,
+"""Analyzer định lượng (kaizen.analyzer): từng rule R1–R8 bắn đúng ca dương/âm trên metrics tổng hợp,
 registry RULES mở rộng được, steps/eval/metrics cơ bản, và chạy được trong môi trường KHÔNG có biến env key nào.
 """
 from __future__ import annotations
@@ -46,9 +46,9 @@ def trial(durs=(10.0, 20.0, 30.0), idle=(1.0, 1.0), picks=None, row_extra=None, 
     return m
 
 
-def run(trials: dict, source="oracle", pred_info=None, rules=None):
-    rep = build_metrics_report(trials, CFG, source)
-    return detect_findings(rep, CFG, pred_info=pred_info or {}, rules=rules)
+def run(trials: dict, source="oracle", pred_info=None, rules=None, standards=None, cfg=None):
+    rep = build_metrics_report(trials, cfg or CFG, source)
+    return detect_findings(rep, cfg or CFG, pred_info=pred_info or {}, rules=rules, standards=standards)
 
 
 def fired(res, rule):
@@ -143,9 +143,49 @@ def test_r7_wrist_posture():
     assert not run({"U1_V1": trial(muri=muri(90.0, available=False))}, rules=only("R7")).findings
 
 
+# ---------------------------------------------------------------- R8 lệch thời gian chuẩn
+WI = {"short": "[WI-TST-001 · tr.1]", "id": "DOC-abcdef:p1:c1"}
+
+
+def std(values: dict, thr=30.0, thr_cit=WI):
+    return {"std_times": {str(k): {"std_s": v, "source": "document", "citation": WI if v else None}
+                          for k, v in values.items()},
+            "thresholds": {"std_dev_pct": {"value": thr, "source": "document" if thr_cit else "default",
+                                           "citation": thr_cit}}}
+
+
+def test_r8_std_time_slow_fast_and_within():
+    res = run({"U1_V1": trial((10.0, 20.0, 30.0))}, rules=only("R8"), standards=std({1: 10.0, 2: 10.0, 3: 50.0}))
+    by_step = {f.evidence["step_id"]: f for f in fired(res, "R8")}
+    assert set(by_step) == {2, 3}                                           # bước 1 đúng chuẩn → không bắn
+    slow, fast = by_step[2], by_step[3]
+    assert slow.type == "std_time_slow" and slow.impact_s_per_cycle == 10.0 and slow.severity == "high"
+    assert slow.evidence["deviation_pct"] == 100.0 and slow.evidence["std_s"] == 10.0 and slow.evidence["dur_s"] == 20.0
+    assert slow.evidence["std_source"] == WI["short"] and slow.evidence["threshold_source"] == WI["short"]
+    assert fast.type == "std_time_fast" and fast.severity == "info" and fast.impact_s_per_cycle == 0.0
+    assert fast.evidence["deviation_pct"] == -40.0 and "bỏ sót" in fast.evidence["note"]
+    # ngưỡng từ tài liệu = 50% → bước 3 (−40%) không còn bắn
+    res50 = run({"U1_V1": trial((10.0, 20.0, 30.0))}, rules=only("R8"), standards=std({2: 10.0, 3: 50.0}, thr=50.0))
+    assert [f.evidence["step_id"] for f in fired(res50, "R8")] == [2]
+
+
+def test_r8_missing_std_no_fire_no_crash_and_station_fallback():
+    res = run({"U1_V1": trial()}, rules=only("R8"))
+    assert not res.findings and any(n.startswith("R8 bỏ qua") for n in res.notes)
+    res = run({"U1_V1": trial()}, rules=only("R8"), standards=std({1: None, 2: None, 3: None}))
+    assert not res.findings and any(n.startswith("R8 bỏ qua") for n in res.notes)
+    part = run({"U1_V1": trial((10.0, 20.0, 30.0))}, rules=only("R8"), standards=std({2: 10.0}))
+    assert [f.evidence["step_id"] for f in part.findings] == [2]             # bước thiếu std → bỏ qua bước đó
+    cfg = with_defaults({**CFG, "steps": [dict(s, std_time_s=10.0) if s["id"] == 2 else s for s in CFG["steps"]]})
+    res = run({"U1_V1": trial((10.0, 20.0, 30.0))}, rules=only("R8"), cfg=cfg)
+    f = fired(res, "R8")[0]
+    assert f.evidence["std_s"] == 10.0 and f.evidence["std_source"] == "station.yaml"
+    assert f.evidence["threshold_pct"] == 30.0 and f.evidence["threshold_source"] == "ngưỡng mặc định hệ thống"
+
+
 # ---------------------------------------------------------------- registry + xếp hạng
 def test_rules_registry_and_ranking():
-    assert [r.id for r in RULES] == [f"R{i}" for i in range(1, 8)]
+    assert [r.id for r in RULES] == [f"R{i}" for i in range(1, 9)]
     assert all(r.description and r.type for r in RULES)
     res = run({"U1_V1": trial((10, 20, 30), idle=(9.0, 1.0)), "U1_V2": trial((10, 21, 30)),
                "U1_V3": trial((10, 60, 30), picks={"bin_a": 2, "bin_b": 2})})

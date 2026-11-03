@@ -77,6 +77,11 @@ class _LLMSteps(BaseModel):
 
 
 # ---------------------------------------------------------------- dry-run: trích bằng code
+def table_rows(md: str) -> tuple[list[str], list[list[str]]]:
+    """Bảng markdown → (header, các dòng) — bỏ dòng phân cách |---|."""
+    return _table_rows(md)
+
+
 def _table_rows(md: str) -> tuple[list[str], list[list[str]]]:
     lines = [ln.strip() for ln in md.split("\n") if ln.strip().startswith("|")]
     cells = [[c.strip() for c in ln.strip("|").split("|")] for ln in lines]

@@ -5,7 +5,7 @@ Kịch bản dưới đây trùng với speaker notes trong file PowerPoint (sin
 
 Gợi ý phân vai: nhóm trưởng Trịnh Gia Huy mở đầu (slide 1–3) và kết thúc (slide 14–15); các phần giữa chia theo mảng mỗi thành viên phụ trách — đội tự điều chỉnh.
 
-Chuẩn bị demo: `streamlit run app/ui.py`, mở run `20261013-003627_pred_mediapipe_dry_u001-2trials` (link `?run=...`), tab *So sánh video*.
+Chuẩn bị demo: `python -m kaizen.core.projects prepare-demo --trials U001_V001,U001_V002` (in bảng READY), rồi `KAIZEN_DEMO=1 streamlit run app/ui.py`; mở thẳng dự án: `?page=project&id=U001_V001`.
 
 ## Slide 1 — Bìa
 
@@ -31,8 +31,8 @@ Thông điệp chính: nếu được chọn, đội sẽ pilot 4 tuần tại m
 Trong giai đoạn hackathon, đội đã xây dựng đủ 4 mảng của một hệ thống chạy thật:
 thứ nhất là thị giác máy tính để trích khung xương và sự kiện thao tác;
 thứ hai là lớp chỉ số Kaizen – phân đoạn bước SOP và tính Muda, Mura, Muri;
-thứ ba là Kaizen Copilot dùng LLM có kiểm chứng;
-và cuối cùng là dashboard cùng bộ kiểm thử tự động 30 test.
+thứ ba là RAG tài liệu và Kaizen Copilot dùng LLM có kiểm chứng;
+và cuối cùng là giao diện theo dự án video cùng bộ kiểm thử tự động 117 test.
 
 ## Slide 4 — Bài toán tại line
 
@@ -48,18 +48,16 @@ Hướng giải của đội: dùng camera đo mọi chu kỳ, dùng LLM giải 
 Giải pháp là một luồng khép kín bốn khâu.
 OBSERVE: camera thường quay trạm, MediaPipe trích khung xương ngay trên CPU, chỉ lưu tọa độ khớp nên không cần giữ khuôn mặt.
 MEASURE: hệ thống tách 12 bước SOP dựa trên vùng khay linh kiện và quy tắc, rồi tính cycle time, tỷ lệ giá trị gia tăng, thời gian chờ, số lần lấy linh kiện, độ biến động và góc cổ tay.
-EXPLAIN: 7 quy tắc tìm vấn đề, xếp hạng theo ảnh hưởng; LLM giải thích có trích dẫn knowledge base và SOP.
+EXPLAIN: 8 quy tắc tìm vấn đề, xếp hạng theo ảnh hưởng — trong đó có quy tắc so thời lượng từng bước với thời gian chuẩn đọc thẳng từ work instruction; LLM giải thích và trích dẫn đúng tài liệu, đúng trang.
 VERIFY: kỹ sư xem dashboard và video bằng chứng, duyệt hay bác bỏ, rồi đo lại bằng đúng phương pháp đó.
 
-## Slide 6 — Kiến trúc pipeline
+## Slide 6 — Kiến trúc luồng
 
-[~1 phút — kiến trúc]
-Về kỹ thuật, pipeline gồm 9 bước, mỗi bước là một script độc lập đọc file và ghi file, nên chạy lại hay thay một khâu rất dễ.
-Năm bước đầu là thị giác máy tính: chốt cấu trúc dữ liệu thật, trích keypoint, lọc nhiễu, sinh sự kiện thao tác và tách bước.
-Bước 5 và 6 là lớp Kaizen: tính chỉ số 3M và chạy quy tắc phát hiện. Bước 7 là Copilot với LLM, bước 8 sinh báo cáo.
-Có ba nguyên tắc quan trọng: thứ nhất, mọi con số do code tính, LLM chỉ giải thích và bị validator kiểm tra.
-Thứ hai, chế độ oracle dùng nhãn chuyên gia để kiểm tra nửa sau độc lập với sai số CV.
-Thứ ba, mỗi lần chạy là một run có manifest, giúp tái lập và so sánh trước – sau.
+[~1 phút 15 — kiến trúc luồng]
+Đây là kiến trúc sau khi đội tách lõi thành package kaizen gồm bốn phần: skeleton cho thị giác máy tính, analyzer cho chỉ số Kaizen, rag cho tài liệu và llm cho Copilot.
+Hàng trên là 6 bước của một lần chạy, cũng chính là 6 bước tiến độ người dùng thấy trên giao diện: trích keypoint, sinh sự kiện thao tác, tách bước SOP, tính 3M và chạy 8 quy tắc, LLM giải thích, rồi xuất báo cáo và video overlay.
+Hàng giữa là làn tài liệu: work instruction hay guideline được chia theo mục và trang, nhúng vector và lưu cục bộ. Từ đó hệ thống đọc ra thời gian chuẩn từng bước và ngưỡng 30% để chạy quy tắc R8, đưa đoạn tài liệu cho LLM trích dẫn, và ghi bảng tham chiếu trong báo cáo — mọi con số chuẩn đều chỉ được về đúng tài liệu, đúng trang.
+Hàng dưới là các ứng dụng dùng chung lõi: giao diện theo dự án video, job chạy nền, so sánh 3M nhiều video và API. Không ứng dụng nào tự tính lại số.
 
 ## Slide 7 — Dữ liệu & độ tin cậy keypoint
 
@@ -82,25 +80,25 @@ Chu kỳ V002 khó hơn: F1 0,71, sai số cycle time 2,27 giây, vì hệ thố
 [~1 phút 15 — 3M]
 Từ các bước đã tách, hệ thống tính đủ ba chiều Lean.
 Muda – lãng phí: biểu đồ Yamazumi bên trái chồng thời lượng 12 bước cho mỗi chu kỳ; tỷ lệ giá trị gia tăng theo nhãn là 82 và 85%; mỗi chu kỳ có 15 và 14 lần lấy linh kiện.
-Mura – biến động: cùng một người nhưng hai lần lắp chênh nhau gần 6,5 giây; bước đặt nắp và bước siết vít biến động nhiều nhất – đó là nơi nên chuẩn hóa thao tác trước.
+Mura – biến động: cùng một người nhưng hai lần lắp chênh nhau gần 6,5 giây; bước ghép Block 2 lên Block 1 và bước siết vít biến động nhiều nhất – đó là nơi nên chuẩn hóa thao tác trước, và cũng chính là hai bước bị quy tắc R8 bắt vì chậm hơn thời gian chuẩn.
 Muri – quá tải: hệ thống sàng lọc góc cổ tay 2D; tay phải lệch quá 30 độ khoảng 12 đến 15% thời gian. Với tay trái, độ phủ chỉ 27% nên hệ thống ghi rõ là chỉ mang tính sàng lọc.
-Khi nạp thêm dữ liệu từ 3 chu kỳ trở lên, quy tắc phát hiện bước chậm bất thường sẽ tự kích hoạt.
+Phần 3M tổng hợp nhiều video được tách sang trang So sánh 3M: người đánh giá chọn các video rồi mới tính; khi có từ 3 video trở lên, quy tắc bước chậm bất thường sẽ tự kích hoạt.
 
-## Slide 10 — Findings & Kaizen Copilot
+## Slide 10 — Findings & Copilot có truy vết
 
-[~1 phút 15 — findings & Copilot]
-Từ các chỉ số, 7 quy tắc tìm ra vấn đề và xếp hạng theo ảnh hưởng nhân với độ tin cậy.
-Finding đứng đầu là F01: ở chu kỳ V002, người thợ lấy linh kiện ở khay vít và lục giác 4 lần trong khi SOP chỉ cần 3. Ảnh bên trái là bằng chứng tự động: đúng thời điểm 62,6 giây, bước 11, tay phải đang ở khay vít.
-Phần Copilot: LLM nhận finding và knowledge base Kaizen, viết quan sát, giả thuyết và đề xuất có trích dẫn. Đây là câu trả lời thật của Gemini 3.8 Flash, trích dẫn KB-13 về tư thế cổ tay và KB-01 về 3M.
-Điểm mấu chốt là validator: mọi con số LLM viết phải có trong dữ liệu, mọi trích dẫn phải tồn tại. Trong thử nghiệm, validator đã chặn số bịa và yêu cầu LLM sửa – đúng nỗi lo "AI bịa" trong môi trường nhà máy.
+[~1 phút 15 — findings & Copilot có truy vết]
+Đây là kết quả thật trên hai lần lắp của người U001, với work instruction WI-EGT-001 đã được nạp vào hệ thống.
+Hệ thống tự đọc bảng thời gian chuẩn của 12 bước trong tài liệu và ngưỡng "chênh lệch trên 30% cần ghi nhận". Từ đó quy tắc R8 bắt được F01: ở lần lắp V002, bước 9 – ghép Block 2 lên Block 1 – mất 14,97 giây, chậm hơn chuẩn 8,5 giây tới 76%. Ảnh bên trái là bằng chứng tự động đúng thời điểm đó, thấy rõ thẻ số 9 trên bàn.
+Phần Copilot: Gemini 2.5 Flash viết quan sát, giả thuyết, đề xuất theo ECRS và cách đo lại; mọi câu đều trích dẫn về đúng tài liệu và trang – ở đây là trang 1 của WI-EGT-001.
+Validator vẫn là chốt chặn: mọi con số phải có trong dữ liệu, mọi trích dẫn phải tồn tại trong kho tài liệu, độ dài từng trường phải đúng quy định; sai thì LLM phải sửa.
 
-## Slide 11 — Dashboard demo
+## Slide 11 — UI dự án video
 
-[~1 phút — demo dashboard; có thể chuyển sang demo trực tiếp]
-Toàn bộ kết quả được đưa lên dashboard Streamlit gồm 8 tab, chỉ đọc kết quả của run nên không bao giờ tự tính lại hay sai lệch con số.
-Bên trái là tab So sánh video: hai lần lắp V001 và V002 phát song song, bấm "Nhảy tới bước" thì cả hai video cùng về đầu một bước SOP để kỹ sư so cách thao tác.
-Bên phải là timeline: hàng bước theo nhãn và hàng bước hệ thống dự đoán xếp chồng nhau để thấy ngay chỗ lệch.
-Ngoài ra còn các tab Muda, Mura và Muri, Findings có trích dẫn bấm xem nguyên văn, so sánh run và nút chạy pipeline ngay từ giao diện.
+[~1 phút — demo giao diện; có thể chuyển sang demo trực tiếp]
+Giao diện được thiết kế lại theo đúng cách kỹ sư làm việc: mỗi video là một dự án.
+Trang Dự án: thêm video – từ dataset, file mp4 tự quay hoặc thư mục ảnh. Trang Chi tiết: bấm Chạy full luồng, hệ thống hiện tiến độ 6 bước, xong thì có video overlay theo nhãn chuẩn như hình trái, và Kaizen Brain ở giữa – bảng từng bước so với thời gian chuẩn, kèm nguồn là trang của work instruction, cùng các finding.
+Trang Tài liệu để nạp work instruction và thử hỏi; trang So sánh 3M để người đánh giá chọn nhiều video rồi mới tính biến động, như Yamazumi bên phải.
+Khi demo, chế độ demo chỉ phát lại kết quả đã tính sẵn và luôn có nhãn báo rõ; video mới thì hệ thống luôn xử lý thật, không bao giờ bịa số.
 
 ## Slide 12 — Hiệu quả mang lại
 

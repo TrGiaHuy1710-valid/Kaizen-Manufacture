@@ -38,3 +38,11 @@ class ScriptedProvider:
 def scripted():
     """Factory: scripted([...responses]) → ScriptedProvider."""
     return ScriptedProvider
+
+
+@pytest.fixture(autouse=True)
+def _isolated_rag_store(tmp_path_factory, monkeypatch):
+    """Mọi test dùng RAG store tạm RỖNG (không đọc data/rag_store thật của máy); test cần store tự đặt lại env."""
+    monkeypatch.setenv("KAIZEN_RAG_STORE", str(tmp_path_factory.mktemp("empty_rag_store")))
+    from kaizen.rag import report_queries
+    report_queries.clear_cache()

@@ -12,6 +12,10 @@ mặc định   : predicted baseline từ events + steps trong station.yaml:
              Nếu giữa 2 mốc có bước không làm mốc được (không tìm thấy, hoặc không có zone), đoạn đó gán
              "unclassified" (step_id 0) và các bước liên quan ghi vào cột `missing`.
              TODO v2: thay bằng DTW với golden cycle / ruptures change-point.
+--segmenter mstcn : thay rule bằng model MS-TCN đã train (kaizen.train.segmenter, docs/training.md) — đọc
+             keypoints .npz của trial, ghi cùng file _pred.csv / _pred_info.json / _eval.json như rule.
+             Mặc định: env KAIZEN_SEGMENTER (không có → rule); model: --segmenter-model > env
+             KAIZEN_SEGMENTER_MODEL > models/segmenter/LATEST.
 Eval (khi có cả 2): sai số start/end từng bước, MAE thời lượng, sai số cycle time, F1@IoU0.5.
 
     python src/04_steps.py --oracle          # chạy trước, không phụ thuộc CV
@@ -19,14 +23,15 @@ Eval (khi có cả 2): sai số start/end từng bước, MAE thời lượng, s
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from kaizen.analyzer.steps import (COLS, LEAD_IN, align_steps, evaluate, iou, lead_in_start,  # noqa: E402,F401
-                                   oracle_steps, predicted_steps, step_names)
+from kaizen.analyzer.steps import (COLS, LEAD_IN, StepsResult, align_steps, evaluate, iou,  # noqa: E402,F401
+                                   lead_in_start, oracle_steps, predicted_steps, step_names)
 from kaizen.core.cli import base_parser, setup, stage_dir  # noqa: E402
 from kaizen.core.config import load_config  # noqa: E402
 from kaizen.core.io import can_write, parse_stem, select_stems, stem, write_json  # noqa: E402
@@ -40,6 +45,12 @@ def main() -> None:
     ap.add_argument("--oracle", action="store_true", help="xuất bước từ nhãn HA4M")
     ap.add_argument("--events-dir", default=None, help="mặc định <run>/events")
     ap.add_argument("--out-dir", default=None, help="mặc định <run>/steps")
+    ap.add_argument("--segmenter", choices=["rule", "mstcn"], default=os.environ.get("KAIZEN_SEGMENTER") or "rule",
+                    help="rule (mặc định, zone + pick) | mstcn (model đã train)")
+    ap.add_argument("--segmenter-model", default=os.environ.get("KAIZEN_SEGMENTER_MODEL") or "latest",
+                    help="thư mục model MS-TCN (mặc định models/segmenter/LATEST)")
+    ap.add_argument("--keypoints-dir", default="data/keypoints", help="nơi tìm <stem>_<pose>.npz cho --segmenter mstcn")
+    ap.add_argument("--pose-model", default=None, help="hậu tố .npz (mặc định pose_model của run, rồi mediapipe)")
     a = ap.parse_args()
     ctx = setup(a, TAG)
     events_dir = stage_dir(ctx, a.events_dir, "events", "outputs/events")
@@ -74,11 +85,32 @@ def main() -> None:
         print(f"[{TAG}] station.yaml chưa có steps", file=sys.stderr)
         sys.exit(1)
     stems = select_stems([p.stem for p in events_dir.glob("*.csv")], a.subjects, a.trials)
+    seg_info = {"segmenter": a.segmenter}
+    if a.segmenter == "mstcn":
+        from kaizen.core.schemas import PredInfo
+        from kaizen.train.segmenter import predict_steps, resolve_model_dir
+        man = ctx.manifest if ctx else {}
+        pose = a.pose_model or man.get("pose_model") or "mediapipe"
+        try:
+            mdir = resolve_model_dir(a.segmenter_model)
+        except FileNotFoundError as e:
+            print(f"[{TAG}] {e}", file=sys.stderr)
+            sys.exit(1)
+        seg_info["segmenter_model"] = str(mdir)
+        print(f"[{TAG}] segmenter = MS-TCN ({mdir})")
     for st in stems:
         out = out_dir / f"{st}_pred.csv"
         if not can_write(out, a.force, TAG):
             continue
-        res = align_steps(pd.read_csv(events_dir / f"{st}.csv"), "pred", cfg)
+        if a.segmenter == "mstcn":
+            npz = Path((man.get("trials", {}).get(st) or {}).get("keypoints") or Path(a.keypoints_dir) / f"{st}_{pose}.npz")
+            if not npz.exists():
+                print(f"[{TAG}] {st}: không thấy {npz} → bỏ qua (cần keypoints cho MS-TCN)", file=sys.stderr)
+                continue
+            df, info_d, _ = predict_steps(mdir, npz, cfg)
+            res = StepsResult(df, "pred", PredInfo.model_validate(info_d))
+        else:
+            res = align_steps(pd.read_csv(events_dir / f"{st}.csv"), "pred", cfg)
         df, nf = res.steps, res.info.not_found
         df.to_csv(out, index=False)
         write_json(out_dir / f"{st}_pred_info.json", res.info.to_json_dict())
@@ -96,7 +128,7 @@ def main() -> None:
         else:
             print(f"[{TAG}] {st}: không có {orc_p.name} → bỏ qua eval")
     if ctx:
-        ctx.record_stage("04_steps_pred", n_trials=len(stems))
+        ctx.record_stage("04_steps_pred", n_trials=len(stems), **seg_info)
 
 
 if __name__ == "__main__":

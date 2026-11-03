@@ -36,7 +36,7 @@ def main():
     src.add_argument("--frames-dir", help="thư mục chuỗi ảnh (HA4M Color/<serial>)")
     ap.add_argument("--fps", type=float, default=None, help="bắt buộc với --frames-dir (t = frame_idx/fps)")
     ap.add_argument("--name", default="", help="stem output, mặc định <subject>_<trial> suy từ đường dẫn")
-    ap.add_argument("--model", choices=["mediapipe", "mediapipe-heavy", "rtmw"], default="mediapipe")
+    ap.add_argument("--model", choices=["mediapipe", "mediapipe-heavy", "rtmw", "rtmpose-custom"], default="mediapipe")
     ap.add_argument("--rtmw-mode", choices=["lightweight", "balanced", "performance"], default="balanced")
     ap.add_argument("--device", default="cpu", help="cpu | cuda (cho rtmw)")
     ap.add_argument("--roi", default="", help="x,y,w,h: chỉ chạy model trong vùng này (toạ độ output vẫn theo ảnh gốc)")
