@@ -1,0 +1,19 @@
+% Sinh từ cùng nguồn nội dung với bản Word.
+\section{Team Contributions and AI Usage}
+
+\begin{table}[H]
+\centering
+\caption{Phân công công việc trong nhóm}
+\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.220\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.140\linewidth-2\tabcolsep\relax}>{\raggedright\arraybackslash}p{\dimexpr 0.640\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Thành viên} & \textbf{MSSV} & \textbf{Công việc} \\\midrule
+Trịnh Gia Huy & 23010069 & Lập trình toàn bộ hệ thống: luồng xử lý video, trích điểm khớp, mô hình MS-TCN, tầng RAG và giao diện web; huấn luyện mô hình và chạy các thí nghiệm (kiểm định chéo, nghiên cứu loại bỏ thành phần, case study RAG). \\
+Nguyễn Thị Nhung & 23010607 & Khảo sát tài liệu liên quan (ước lượng tư thế, phân đoạn hành động, RAG); tìm hiểu, tải và kiểm tra bộ dữ liệu HA4M; biên soạn kho tri thức cho RAG (hướng dẫn công việc mô phỏng, SOP, tri thức Kaizen); viết chương I–II của báo cáo. \\
+Hoàng Tiến Đạt & 23010864 & Phân tích và trình bày kết quả thực nghiệm; đánh giá tầng RAG và các chỉ số 3M; kiểm thử giao diện web và chuẩn bị hình minh hoạ; viết chương III–VI, tổng hợp báo cáo và slide thuyết trình. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Sử dụng công cụ AI.} Nhóm sử dụng Claude (Anthropic) qua công cụ Claude Code để hỗ trợ viết mã và tìm kiếm thông tin trên web (tài liệu thư viện, bài báo gốc của các mô hình, thông tin cuộc thi). Mã do công cụ đề xuất được kiểm thử bằng bộ kiểm thử tự động và chạy trên dữ liệu thật; mọi số liệu trong báo cáo đến từ các lần chạy thực tế của hệ thống. Gemini 3.5 Flash-Lite là một thành phần của hệ thống (sinh diễn giải trong tầng RAG, mục 3.6), không phải công cụ hỗ trợ làm bài.

@@ -1,274 +1,142 @@
-% ============================== IV. IMPLEMENTATION ==============================
+% Sinh từ cùng nguồn nội dung với bản Word.
 \section{Implementation}
-\label{sec:impl}
 
-\subsection{Code Implementation}
-\label{subsec:code}
-Hệ thống viết bằng Python~3.11 (khoảng 11 nghìn dòng trong \code{kaizen/}, \code{src/}, \code{app/}).
-Thư viện chính: NumPy, pandas, SciPy, Shapely, OneEuroFilter, Matplotlib, OpenCV/MediaPipe, PyTorch (CPU),
-Pydantic, ChromaDB, sentence-transformers, FastAPI và Streamlit.
-Hệ thống không dùng Docker hay CSDL máy chủ: mọi thứ chạy trên một máy CPU.
-Mã nguồn được tổ chức thành một package có ranh giới rõ ràng (\cref{tab:modules}).
-Các script \code{src/00\_inspect.py}--\code{src/08\_report.py} chỉ là lớp vỏ CLI mỏng.
+\subsection{System Implementation}
 
-\begin{table}[t]
+Hệ thống được hiện thực bằng Python với PyTorch cho mô hình phân đoạn, MediaPipe cho ước lượng tư thế, sentence-transformers và ChromaDB cho thành phần truy xuất, SDK Google GenAI để gọi mô hình Gemini, cùng FastAPI và Streamlit cho dịch vụ và giao diện. Luồng xử lý được chia thành chín khối chạy tuần tự (Bảng 4.1); mỗi khối đọc kết quả của khối trước và ghi kết quả của mình, nên có thể chạy lại độc lập khi thay đổi một mô hình hay tham số. Mỗi lần chạy được lưu riêng cùng câu lệnh, phiên bản, cấu hình trạm, bộ phân đoạn và mô hình đã dùng.
+
+\begin{table}[H]
 \centering
-\caption{Các mô-đun của package \code{kaizen/}}
-\label{tab:modules}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\columnwidth}{@{}lX@{}}
+\caption{Các khối của luồng xử lý}
+\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.240\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.300\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.460\linewidth-2\tabcolsep\relax}@{}}
 \toprule
-Mô-đun & Vai trò / API chính \\
-\midrule
-\code{skeleton} & nguồn video (\code{ha4m://}, \code{video://}, \code{frames://}), backend pose (registry),
-                  \code{extract}, \code{compute\_features}, \code{detect\_events}, overlay \\
-\code{analyzer} & thuần tính toán: \code{align\_steps}, \code{evaluate}, \code{compute\_metrics},
-                  \code{detect\_findings} (\code{RULES} R1--R8), báo cáo, 3M nhiều video \\
-\code{llm}      & \code{get\_provider} (anthropic $|$ gemini $|$ openai $|$ dry-run), prompt có version,
-                  parse JSON chịu lỗi, \code{validator}, \code{explain} \\
-\code{rag}      & ingest PDF/DOCX/MD/TXT $\to$ chunk $\to$ embed $\to$ \code{DocumentStore};
-                  trích bước chuẩn, sinh nháp \code{station.yaml} \\
-\code{train}    & MS-TCN segmenter, chuẩn bị dữ liệu và đánh giá fine-tune pose \\
-\code{core}     & \code{run\_io}, cấu hình, schema Pydantic cho mọi artifact, dự án, pipeline nền \\
-\code{api}      & dịch vụ FastAPI (tài liệu, truy vấn RAG, trích bước, diễn giải) \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\textbf{Run và truy vết.} Lệnh \code{run\_all.sh} chạy 00$\to$08 vào một thư mục run mới
-\code{outputs/runs/<thời điểm>\_<pred|oracle>\_<pose>\_<llm>[\_tag]/} và không ghi đè run cũ.
-\code{manifest.json} ghi thời điểm, git hash, lệnh gốc, nguồn dữ liệu, metadata pose, nhãn có sẵn hay không,
-provider/model LLM, segmenter và tham số của từng stage.
-Bản chụp \code{station.yaml} được lưu cùng run.
-Công cụ \code{compare\_runs.py} xuất bảng so sánh cycle time, \%VA, idle, \Fone, MAE và tỷ lệ đạt LLM giữa các run.
-Mọi artifact được kiểm bằng schema Pydantic.
-Khi refactor, các artifact (\code{metrics.json}, \code{findings.json}, \dots) phải giữ giống từng byte trên cùng một đầu vào.
-
-\textbf{Giao diện.} Ứng dụng Streamlit gồm bốn trang theo mô hình ``một video = một dự án'' (\cref{fig:ui}):
-Dự án, Chi tiết dự án (chạy toàn luồng, video overlay, ``Kaizen Brain''), Tài liệu (nạp RAG và thử truy vấn),
-và So sánh 3M nhiều video.
-UI chỉ đọc artifact qua một lớp truy cập duy nhất và không tự tính bất kỳ chỉ số nào.
-
-\textbf{Kiểm thử.} Bộ \code{pytest} gồm 124 kiểm thử trên dữ liệu tổng hợp (keypoint giả dạng hình sin).
-Bộ này bao phủ validator, provider LLM (dùng FakeProvider), các quy tắc R1--R8, adapter pose, RAG, API, UI và
-smoke-train MS-TCN, và không cần mạng, API key hay dataset.
-Lệnh chạy thử toàn luồng:
-\begin{Verbatim}[fontsize=\scriptsize,frame=single]
-bash run_all.sh --oracle --subjects U001 --trials all \
-     --provider gemini --tag demo
-bash run_all.sh --segmenter mstcn \
-     --segmenter-model models/segmenter/<name> --dry-run
-\end{Verbatim}
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.75\textwidth]{ui2_brain.png}
-  \caption{Trang ``Kaizen Brain'' của UI: bảng bước với thời gian chuẩn và nguồn trích dẫn, cùng một phát hiện R7
-  kèm giải thích LLM đã qua validator.}
-  \label{fig:ui}
-\end{figure}
-
-\subsection{Model Architectures}
-\label{subsec:arch}
-\textbf{Pose.} \Cref{tab:pose_models} liệt kê các backend.
-MediaPipe Pose Landmarker \cite{mp_pose} chạy ở chế độ video. Hand Landmarker \cite{mp_hand}
-có thể chạy trên vùng vuông quanh từng cổ tay, và tay được ghép với cổ tay gần nhất.
-RTMW \cite{rtmlib} chạy qua rtmlib/ONNX.
-Backend \code{rtmpose-custom} nạp một RTMPose-m \cite{rtmpose} đã fine-tune và export sang ONNX
-(biến môi trường \code{KAIZEN\_POSE\_ONNX}).
-Mọi backend ghi ra cùng một schema \code{.npz}: \code{kpts (T,K,3), t, names, meta}.
-
-\begin{table}[t]
-\centering
-\caption{Các backend ước lượng khung xương}
-\label{tab:pose_models}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\columnwidth}{@{}lcXl@{}}
-\toprule
-Backend & Điểm & Ghi chú & Muri \\
-\midrule
-MediaPipe (mặc định) & 75 & 33 thân + $2\times21$ tay; CPU & có \\
-RTMW-m & 133 & toàn thân COCO-WholeBody; ONNX & có \\
-RTMPose-m fine-tune & 17 & COCO-17, nhãn giả Kinect; không có điểm tay & không \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\textbf{Đặc trưng cho segmenter (kp\_v1).} Mỗi frame dùng $J=15$ khớp: mũi, hai vai, hai khuỷu, hai cổ tay, hai hông,
-và ba điểm của mỗi bàn tay (gốc ngón giữa, đầu ngón trỏ, đầu ngón cái).
-Mỗi khớp cho 7 giá trị, nên vector đặc trưng có $D=7J=105$ chiều:
-\begin{itemize}
-  \item toạ độ tuyệt đối $(x/W,y/H)$, vì vị trí khay cố định theo camera;
-  \item toạ độ theo thân $(p-\bar p_{\text{vai}})/\lVert p_{\text{vai,L}}-p_{\text{vai,R}}\rVert$;
-  \item vận tốc $\Delta(x/W,y/H)\cdot f$;
-  \item mask hợp lệ (score $\ge0{,}3$).
-\end{itemize}
-Khớp mà model pose không có (ví dụ COCO-17 không có bàn tay) nhận giá trị 0 và mask 0, nên $D$ luôn cố định.
-Đặc trưng được chuẩn hoá z-score bằng thống kê của tập train, lưu cùng model.
-
-\textbf{MS-TCN.} \Cref{fig:mstcn} mô tả kiến trúc, theo đúng thiết kế gốc \cite{farha2019mstcn}:
-$S=4$ stage, mỗi stage $L=10$ lớp residual tích chập giãn (kernel 3, dilation $2^\ell$), 64 kênh, dropout 0{,}5.
-Trường tiếp nhận của mỗi stage khoảng $2^{L+1}-1=2047$ frame (ở 15\,fps tương đương khoảng 136\,s), dài hơn một chu kỳ lắp.
-Stage 2..$S$ nhận softmax của stage trước. Hàm mất mát của mỗi stage là
-\begin{equation}
-  \mathcal{L}_s=\frac{1}{T}\sum_t -\log \hat y_{t,c_t}
-  + \frac{\lambda}{TC}\sum_{t,c}\min\!\big(\Delta_{t,c}^2,\tau^2\big),
-  \label{eq:mstcn_loss}
-\end{equation}
-với $\Delta_{t,c}=\log\hat y_{t,c}-\log\hat y_{t-1,c}$, $\lambda=0{,}15$ và $\tau=4$.
-Frame không có nhãn được bỏ qua khi tính loss.
-Model có khoảng \todo{số tham số, in bằng \code{sum(p.numel())}} tham số.
-
-\begin{figure}[t]
-  \centering
-  \resizebox{0.8\textwidth}{!}{\input{figures/mstcn.tex}}
-  \caption{MS-TCN cho phân đoạn bước. Đầu vào là chuỗi đặc trưng kp\_v1;
-  $C$ lớp tương ứng các cặp (action, repetition) cộng lớp nền.}
-  \label{fig:mstcn}
-\end{figure}
-
-\textbf{LLM và embedding.} Lớp provider thống nhất hỗ trợ Gemini (mặc định \code{gemini-2.5-flash}) \cite{gemini},
-Anthropic Claude (\code{claude-sonnet-4-6}), OpenAI (\code{gpt-4.1-mini}, chế độ JSON)
-và provider \code{dry-run}
-để chạy không cần key.
-Embedding dùng model \path{intfloat/multilingual-e5-small} \cite{e5}, chạy cục bộ.
-Một embedder băm $n$-gram tất định được dùng cho CI và môi trường offline.
-
-\subsection{Datasets}
-\label{subsec:data}
-\textbf{HA4M} \cite{ha4m} gồm 41 người lắp (U001--U041) bộ bánh răng hành tinh theo 12 hành động
-(\cref{tab:actions}), được quay bằng Azure Kinect.
-Bước 00 của pipeline đọc trực tiếp dữ liệu thật để chốt schema, thay vì giả định. Kết quả:
-{\raggedright
-\begin{itemize}
-  \item mỗi lần lắp nằm trong thư mục \code{IDU<subject>V<trial>/};
-  \item ảnh Color là chuỗi PNG $2048\times1536$, tên dạng \code{FrameID<6 số>\_DeviceTimeStamp<µs>us.png};
-        fps\,=\,30, xác nhận bằng trung vị $\Delta t$\,=\,33{,}33\,ms;
-  \item \code{Labels.txt} có ba cột nguyên phân tách bằng dấu cách: \code{frame action\_id repetition},
-        với 0 là ``don't care'';
-  \item skeleton Kinect lưu dạng TSV 32 khớp, có toạ độ chiếu lên ảnh Color.
-\end{itemize}
-\par}
-Mỗi thư mục lần lắp chiếm khoảng 18\,GB vì có đủ mọi modality, nhưng pipeline chỉ cần Color và nhãn
-(thêm Skeletons cho phần fine-tune pose).
-Sau khi trích keypoint, phần huấn luyện chỉ cần file \code{.npz} (khoảng 1{,}3\,MB mỗi video) và \code{Labels.txt}.
-
-\begin{table}[t]
-\centering
-\caption{12 hành động HA4M và số frame của U001\_V001}
-\label{tab:actions}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\columnwidth}{@{}clcr@{}}
-\toprule
-ID & Hành động & Lặp & Frame \\
-\midrule
-1 & Pick up/Place Carrier & 1 & 126 \\
-2 & Pick up/Place Gear Bearings & 3 & 281 \\
-3 & Pick up/Place Planet Gears & 3 & 238 \\
-4 & Pick up/Place Carrier Shaft & 1 & 114 \\
-5 & Pick up/Place Sun Shaft & 1 & 111 \\
-6 & Pick up/Place Sun Gear & 1 & 98 \\
-7 & Pick up/Place Sun Gear Bearing & 1 & 103 \\
-8 & Pick up/Place Ring Bear & 1 & 120 \\
-9 & Pick up Block 2, place on Block 1 & 1 & 253 \\
-10 & Pick up/Place Cover & 1 & 283 \\
-11 & Pick up/Place Screw & 2 & 291 \\
-12 & Allen key: turn screws, return key \& EGT & 1 & 319 \\
-\midrule
-0 & Don't care (đầu/cuối) & -- & 90 \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\textbf{Dữ liệu đã dùng.} Hiện tại có hai lần lắp của U001: V001 (2427 frame, 80{,}9\,s) và V002 (2655 frame).
-Dữ liệu cho phần huấn luyện: \todo{danh sách subject/trial đã tải, ví dụ U001--U005, tổng số video, tổng số frame}.
-
-\textbf{Cấu hình trạm.} File \code{station.yaml} khai báo 11 zone (10 khay và vùng lắp).
-Mỗi zone là vùng \textit{cổ tay} khi với vào khay, không phải viền khay, và được vẽ bằng công cụ click chuột trên một frame
-(\cref{fig:station}).
-File còn khai báo 12 bước SOP ứng với khay đặc trưng (bước 9 không có khay), cờ VA, ROI chạy pose
-và các ngưỡng ở \cref{sec:method}.
-
-\textbf{Tri thức.} Kho tri thức gồm ba nguồn:
-\code{kaizen\_kb.md} có 16 đoạn \code{[KB-xx]} (3M, 7 lãng phí, nguyên tắc Barnes, ECRS, Standardized Work, Yamazumi);
-\code{sop.md} có 16 đoạn \code{[SOP-xx]} mô phỏng SOP 12 bước;
-và work instruction mô phỏng \code{WI-EGT-001} (PDF 2 trang) có bảng thời gian chuẩn từng bước, ngưỡng lệch 30\%
-và ngưỡng góc cổ tay 30°.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.85\textwidth]{evidence_F01.png}
-  \caption{Trạm HA4M (U001\_V002, frame 1400) với 11 zone đã cấu hình và hai cổ tay (L/R) ước lượng bằng MediaPipe.
-  Ảnh này là ảnh bằng chứng do khối 08 tự sinh cho một phát hiện.}
-  \label{fig:station}
-\end{figure}
-
-\subsection{Training}
-\label{subsec:training}
-% ---------------------------------------------------------------
-% DRAFT — điền số liệu sau khi tự chạy các lệnh trong docs/training.md
-% ---------------------------------------------------------------
-Huấn luyện là \textit{tuỳ chọn} và chỉ chạy khi người dùng gõ lệnh.
-Khi chưa có model, pipeline vẫn dùng đường mặc định (pose pretrained, tách bước bằng quy tắc).
-
-\textbf{Segmenter MS-TCN.} Tập dữ liệu được quét từ các cặp \code{.npz} và \code{Labels.txt}.
-Nhãn được căn theo chỉ số frame của \code{.npz}.
-Dữ liệu được chia train/val/test \textit{theo người lắp}, nên không người nào xuất hiện ở hai tập.
-Đánh giá chéo dùng group $k$-fold theo người, hoặc leave-one-subject-out (LOSO, $k=0$).
-Siêu tham số mặc định theo MS-TCN gốc (\cref{tab:hparams}).
-Model được huấn luyện ở 15\,fps (lấy 1 trong 2 frame); khi dự đoán, nhãn được lặp lại về 30\,fps.
-Huấn luyện dừng sớm theo F1@50 trên tập val.
-Thư mục model lưu \code{model.pt}, \code{config.json} và \code{train\_log.csv}.
-\code{config.json} gồm danh sách lớp, thống kê chuẩn hoá, danh sách người của từng tập, siêu tham số, epoch tốt nhất
-và đánh giá mức bước trên val, theo cùng định nghĩa với khối 04.
-\begin{Verbatim}[fontsize=\scriptsize,frame=single]
-python -m kaizen.train.segmenter status
-python -m kaizen.train.segmenter cv --folds 0
-python -m kaizen.train.segmenter train --name mstcn_v1 \
-       --val-subjects <S_val> --test-subjects <S_test>
-\end{Verbatim}
-
-\begin{table}[t]
-\centering
-\caption{Siêu tham số huấn luyện MS-TCN}
-\label{tab:hparams}
-\footnotesize
-\begin{tabular}{@{}ll@{}}
-\toprule
-Tham số & Giá trị \\
-\midrule
-Stage / lớp / kênh & 4 / 10 / 64 \\
-Dropout & 0{,}5 \\
-$\lambda$ (làm mượt), $\tau$ & 0{,}15, 4 \\
-Optimizer & Adam, lr $5\!\times\!10^{-4}$, weight decay $10^{-4}$ \\
-Batch / epoch tối đa & 4 video / 100 \\
-Early stopping & patience 20 epoch theo F1@50 (val) \\
-Lấy mẫu & 1/2 (15\,fps) \\
-Hậu xử lý & nhập mảnh bước $<0{,}5$\,s \\
-Phần cứng & \todo{CPU/GPU, số lõi, RAM} \\
-Thời gian train & \todo{phút/lần train; tổng cho CV} \\
+\textbf{Khối} & \textbf{Đầu vào $\rightarrow$ Đầu ra} & \textbf{Chức năng} \\\midrule
+1. Khảo sát dữ liệu & Thư mục video $\rightarrow$ báo cáo khảo sát & Kiểm tra cấu trúc, định dạng nhãn, tốc độ khung hình \\
+2. Trích xuất điểm khớp & Ảnh Color $\rightarrow$ chuỗi điểm khớp & Ước lượng tư thế trên vùng quan tâm, lưu toạ độ, điểm số, chỉ số khung hình \\
+3. Đặc trưng chuyển động & Điểm khớp $\rightarrow$ đặc trưng cổ tay & Sàng lọc, nội suy ngắn, làm trơn, tốc độ và vùng thao tác \\
+4. Sự kiện & Đặc trưng $\rightarrow$ sự kiện & Lấy, với tay, lắp, chuyển, chờ cho từng tay \\
+5. Phân đoạn bước & Điểm khớp (+ nhãn) $\rightarrow$ bảng bước & MS-TCN hoặc quy tắc vùng; ranh giới chuẩn từ nhãn để đối chứng \\
+6. Chỉ số & Bước, sự kiện $\rightarrow$ chỉ số & Thời lượng bước, chu kỳ, thời gian chờ, tỉ lệ VA, góc cổ tay \\
+7. Phát hiện & Chỉ số + chuẩn $\rightarrow$ phát hiện & Truy xuất thời gian chuẩn và ngưỡng, quy tắc R1–R8, xếp hạng \\
+8. Diễn giải & Phát hiện + đoạn tài liệu $\rightarrow$ diễn giải & Gọi mô hình ngôn ngữ, kiểm tra, sinh lại có phản hồi \\
+9. Báo cáo & Toàn bộ kết quả $\rightarrow$ báo cáo & Bảng bước, độ lệch, biểu đồ, phát hiện, bằng chứng và trích dẫn \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\todo{Đường cong loss và F1@50 (val) theo epoch, vẽ từ \code{train\_log.csv}, lưu \code{figures/train\_curve.png}
-rồi bỏ comment khối figure bên dưới.}
-% \begin{figure}[t]
-%   \centering
-%   \includegraphics[width=\columnwidth]{train_curve.png}
-%   \caption{Loss train và F1@50 trên val theo epoch (MS-TCN).}
-%   \label{fig:train_curve}
-% \end{figure}
+Giao diện web có bốn trang: danh sách dự án video, chi tiết từng video (bảng bước, phát hiện và diễn giải), tài liệu RAG (nạp tài liệu, thử truy vấn) và so sánh 3M trên nhiều video. Giao diện chỉ đọc kết quả đã lưu, không tính lại số liệu. Hình 4.1 so sánh ba nguồn ranh giới bước trên cùng video U002\_V001; Hình 4.2 là trang danh sách dự án với ba lần phân tích tương ứng và hai video của U001.
 
-\textbf{Fine-tune RTMPose (nhãn giả Kinect).} Skeleton Azure Kinect đã chiếu lên ảnh Color được ánh xạ sang 17 khớp COCO.
-Khớp có độ tin cậy $\ge0{,}5$ nhận visibility 2; khớp có độ tin cậy dương nhưng thấp hơn nhận visibility 1.
-Cứ 15 frame lấy 1 frame; frame có ít nhất 6 khớp nhìn thấy được giữ lại.
-Ảnh được crop quanh người (lề 25\%) và lưu thành JPEG kèm annotation COCO.
-Model khởi tạo từ RTMPose-m pretrained trên COCO và AIC, được fine-tune 60 epoch với lr $10^{-4}$ và EMA trong MMPose
-\cite{rtmpose}, rồi export ONNX bằng MMDeploy.
-Nhãn giả mang theo sai số của Kinect, nhất là ở cổ tay khi bị che.
-Vì vậy model fine-tune chỉ được giữ lại nếu PCK so với Kinect trên người lắp chưa thấy tốt hơn baseline.
-Số liệu: \todo{số ảnh train/val, số người, thời gian train, GPU}.
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.97\linewidth]{fig41_timeline.png}
+\caption{Dòng thời gian các bước trên video U002\_V001: ground truth (nhãn HA4M), dự đoán trước huấn luyện (luật vùng khay) và sau huấn luyện (MS-TCN, cấu hình chính, seed 0); vùng xám là phần video không có hình.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.91\linewidth]{web_home.png}
+\caption{Trang danh sách dự án trên giao diện web: cycle time và F1@IoU0.5 theo từng nguồn ranh giới bước.}
+\end{figure}
+
+\subsection{Models}
+
+Bảng 4.2 liệt kê các mô hình trong luồng xử lý. Chỉ MS-TCN được huấn luyện trên dữ liệu của đề tài; các mô hình còn lại dùng trọng số có sẵn. Phương pháp đối chứng không cần huấn luyện là bộ phân đoạn quy tắc: dựa trên 11 vùng đa giác khai báo cho trạm (10 khay linh kiện và vùng lắp ráp, vẽ thủ công trên video của U001), mốc mỗi bước là lần lấy đầu tiên tại khay đặc trưng của bước theo thứ tự SOP. Phương pháp này không tách được bước 9 vì bước này không có khay riêng.
+
+\begin{table}[H]
+\centering
+\caption{Các mô hình sử dụng trong hệ thống}
+\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.216\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.333\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.275\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.176\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Thành phần} & \textbf{Mô hình} & \textbf{Đầu ra} & \textbf{Trạng thái} \\\midrule
+Ước lượng tư thế & MediaPipe Pose Landmarker (full) + Hand Landmarker & 33 điểm cơ thể + 21 điểm mỗi bàn tay & Huấn luyện sẵn \\
+Phân đoạn hành động & MS-TCN, 4 giai đoạn $\times$ 10 lớp, 64 kênh & Xác suất 18 lớp tại mỗi thời điểm & Huấn luyện trên HA4M \\
+Mã hoá truy xuất & multilingual-e5-small & Vector 384 chiều, chuẩn hoá L2 & Huấn luyện sẵn \\
+Mô hình ngôn ngữ & Gemini 3.5 Flash-Lite qua API & Diễn giải JSON có trích dẫn & Huấn luyện sẵn, không tinh chỉnh \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Với kích thước nhân 3 và hệ số giãn 2$^{0}$ đến 2$^{9}$, vùng tiếp nhận mỗi giai đoạn là 2047 thời điểm, tức khoảng 136 giây ở tần số 15 thời điểm mỗi giây — dài hơn một chu kỳ lắp ráp. Tích chập nhìn cả hai phía của thời điểm đang xét, khoảng 68 giây mỗi phía, nên nhãn tại một thời điểm phụ thuộc vào phần video phía sau nó. Vì vậy hệ thống được thiết kế để phân tích video đã ghi xong (xử lý ngoại tuyến), không cho nhãn tức thời trong lúc người làm đang thao tác. Số tham số là 675.592 với đầu vào 105 chiều và 672.904 với đầu vào 63 chiều; khác biệt chỉ nằm ở lớp ánh xạ đầu vào.
+
+\subsection{Datasets}
+
+HA4M~\citep{ha4m} gồm 217 video của 41 người lắp bộ bánh răng hành tinh tại một trạm với camera Azure Kinect cố định; ảnh Color 2048$\times$1536 ở 30 khung hình/giây, nhãn theo từng khung hình gồm mã thao tác (0 là “don't care”, 1–12) và chỉ số lần lặp. Thao tác 2 và 3 lặp ba lần, thao tác 11 lặp hai lần, nên mỗi chu kỳ có 17 khoá bước; cùng lớp nền, mô hình học 18 lớp (Bảng 4.3). Mỗi video nặng khoảng 12 GB ở dạng nén; do giới hạn lưu trữ, nhóm xử lý từng video (giải nén ảnh Color và nhãn, trích điểm khớp, xoá ảnh) và tại thời điểm thực nghiệm có ba video có nhãn (Bảng 4.4).
+
+\begin{table}[H]
+\centering
+\caption{Các thao tác lắp ráp trong HA4M}
+\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\centering\arraybackslash}p{\dimexpr 0.082\linewidth-2\tabcolsep\relax}>{\raggedright\arraybackslash}p{\dimexpr 0.765\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.153\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Mã} & \textbf{Thao tác} & \textbf{Số lần lặp} \\\midrule
+1 & Pick up/Place Carrier & 1 \\
+2 & Pick up/Place Gear Bearings & 3 \\
+3 & Pick up/Place Planet Gears & 3 \\
+4 & Pick up/Place Carrier Shaft & 1 \\
+5 & Pick up/Place Sun Shaft & 1 \\
+6 & Pick up/Place Sun Gear & 1 \\
+7 & Pick up/Place Sun Gear Bearing & 1 \\
+8 & Pick up/Place Ring Bear & 1 \\
+9 & Pick up Block 2 and place it on Block 1 & 1 \\
+10 & Pick up/Place Cover & 1 \\
+11 & Pick up/Place Screw & 2 \\
+12 & Pick up Allen Key, turn both screws, return Allen Key and the EGT & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.97\linewidth]{frame_V001_step3.png}
+\caption{Khung hình Color của video U001\_V001 tại bước 3, kèm vị trí cổ tay trái (L), cổ tay phải (R) và các vùng khay linh kiện khai báo cho trạm.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Dữ liệu sử dụng trong thực nghiệm}
+\footnotesize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.154\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.096\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.115\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.115\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.115\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.135\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.135\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.135\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Video} & \textbf{Người} & \textbf{Vai trò} & \textbf{Khung hình có nhãn} & \textbf{Thời lượng (s)} & \textbf{Chu kỳ (s)} & \textbf{Cổ tay hợp lệ} & \textbf{Ngón tay phải hợp lệ} \\\midrule
+U001\_V001 & U001 & Huấn luyện / CV & 2427 & 80,9 & 77,9 & 92\% & 87\% \\
+U001\_V002 & U001 & Huấn luyện / CV & 2655 & 88,5 & 84,3 & 92\% & 90\% \\
+U002\_V001 & U002 & Kiểm tra & 3802 (ảnh: 3278) & 126,7 & 123,6 & 96\% & 13\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Video U002\_V001 chỉ giải nén được 3278 trên 3802 ảnh Color (tệp nén bị lỗi ở phần cuối), nên phần hình kết thúc tại 109,2 giây trong khi chu kỳ kéo dài 123,6 giây; bước 12 gần như không có hình và được loại khỏi đánh giá theo quy tắc ở mục 3.5. Nhãn được căn theo chỉ số khung hình gốc của chuỗi điểm khớp; tham số chuẩn hoá đặc trưng chỉ được ước lượng trên tập huấn luyện. Kho tri thức cho RAG gồm tài liệu hướng dẫn công việc của trạm (PDF hai trang, có bảng thời gian chuẩn 12 bước, cycle time chuẩn 78 giây, takt 85 giây), SOP mô phỏng và cơ sở tri thức Kaizen; cả ba do nhóm biên soạn cho mục đích kiểm chứng chức năng, không phải tài liệu thật của nhà máy.
+
+\subsection{Training}
+
+Mô hình được huấn luyện bằng Adam với hàm mất mát cross-entropy cộng thành phần làm mượt T-MSE tại mọi giai đoạn. Chuỗi đặc trưng được lấy mẫu 1/2 (15 thời điểm mỗi giây) trước khi đưa vào mạng; dự đoán được lặp lại để trở về 30 khung hình/giây. Bảng 4.5 liệt kê siêu tham số. Các giá trị kiến trúc và tối ưu theo cấu hình gốc của MS-TCN, không điều chỉnh trên dữ liệu kiểm tra; các lựa chọn được điều chỉnh gồm số epoch, tập đặc trưng, tăng cường dữ liệu và cách giải mã — tất cả được so sánh bằng kiểm định chéo trên người huấn luyện.
+
+\begin{table}[H]
+\centering
+\caption{Siêu tham số huấn luyện MS-TCN}
+\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.300\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.700\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Tham số} & \textbf{Giá trị} \\\midrule
+Kiến trúc & 4 giai đoạn $\times$ 10 lớp giãn, 64 kênh, dropout 0,5 \\
+Hàm mất mát & CE + $\lambda$·T-MSE, $\lambda$ = 0,15, chặn $\tau$ = 4 \\
+Tối ưu & Adam, tốc độ học 5·10$^{-4}$, weight decay 10$^{-4}$, batch 4 chuỗi \\
+Lấy mẫu thời gian & 1/2 (15 thời điểm/giây) \\
+Số epoch & Tối đa 200 khi kiểm định chéo; mô hình cuối dùng số epoch được chọn \\
+Đánh giá / lưu checkpoint & Mỗi 2 epoch / mỗi 10 epoch \\
+Tăng cường co giãn tốc độ & Hệ số log-đều trong [0,667; 1,5], toàn chuỗi hoặc theo đoạn \\
+Hậu xử lý & Gộp đoạn ngắn hơn 0,5 giây vào đoạn lân cận \\
+Seed & 0, 1, 2, 3, 4 \\
+Phần cứng & GPU NVIDIA Quadro RTX 8000 (dùng chung), PyTorch 2.6, CUDA 12.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Giao thức huấn luyện gồm ba bước. (1) Kiểm định chéo hai lần theo video trên U001: huấn luyện trên V001 và đánh giá trên V002, rồi đổi vai; mỗi lần chạy 200 epoch không dừng sớm để thu toàn bộ đường xác thực. (2) Chọn số epoch là epoch có checkpoint đạt F1@50 xác thực trung bình (qua 2 lần $\times$ 5 seed, làm mượt trung bình trượt 5 điểm) lớn nhất. (3) Huấn luyện lại trên cả hai video của U001 với số epoch đã chọn và kiểm tra một lần trên U002. U002 không tham gia bất kỳ lựa chọn nào ở bước (1)–(2). Một lần huấn luyện mô hình cuối mất khoảng 23 giây trên GPU; toàn bộ một cấu hình (10 lần kiểm định chéo, 5 mô hình cuối và các lần đánh giá) mất 8–9 phút.

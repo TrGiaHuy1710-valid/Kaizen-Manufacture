@@ -1,30 +1,17 @@
-% ============================== VI. CONCLUSION ==============================
+% Sinh từ cùng nguồn nội dung với bản Word.
 \section{Conclusion}
-\label{sec:conclusion}
-Báo cáo đã trình bày AI Kaizen Copilot, một pipeline phân tích thao tác lắp ráp từ video RGB.
-Pipeline đi từ khung xương 2D tới chỉ số \muda/\mura/\muri{} có đơn vị và định nghĩa,
-rồi tới danh sách phát hiện xếp hạng theo giây/chu kỳ và giải thích LLM \textit{có kiểm chứng bằng code}.
-Ba lựa chọn thiết kế giúp hệ thống đáng tin hơn một hệ ``LLM xem video'':
-(i) mọi con số do tầng phân tích tất định tính ra;
-(ii) LLM bị ràng buộc bởi whitelist số liệu và tập trích dẫn hợp lệ, có hỏi lại khi sai;
-(iii) chế độ oracle tách sai số thị giác khỏi phần phân tích.
-Trên HA4M, baseline quy tắc không cần huấn luyện đã đạt \Fone{} 0{,}71--0{,}75 và sai số cycle time dưới 2{,}3\,s.
-Hệ thống chỉ ra đúng hai bước vượt thời gian chuẩn (bước 9: $+76{,}1\%$; bước 12: $+34{,}3\%$), kèm trích dẫn tới
-trang của work instruction.
-Tầng LLM đạt 100\% kiểm chứng sau một lần hỏi lại.
-\todo{Một câu kết quả MS-TCN so với baseline khi đã train trên nhiều người.}
 
-\textbf{Hướng phát triển.}
-\begin{itemize}
-  \item Huấn luyện và đánh giá MS-TCN trên toàn bộ 41 người của HA4M, có so sánh với ST-GCN
-        và MS-TCN++.
-  \item Căn chỉnh chu kỳ với một chu kỳ mẫu (golden cycle) của người thợ giỏi bằng DTW,
-        để đo khoảng cách kỹ năng giữa người mới và người thạo việc.
-  \item Hiệu chuẩn px sang cm, ước lượng 3D (RTMW3D hoặc độ sâu Kinect) cho Muri, và hỗ trợ nhiều camera.
-  \item Pilot tại một trạm thật của DENSO: vẽ zone theo layout thật, đối chiếu với kỹ sư IE, và đo tỷ lệ đề xuất được chấp nhận.
-\end{itemize}
+Nhóm đã xây dựng một hệ thống chạy trọn từ video lắp ráp đến báo cáo khuyến nghị có trích dẫn: trích điểm khớp, phân đoạn bước bằng MS-TCN, đo thời gian và ba chỉ số 3M, truy xuất tài liệu chuẩn và sinh diễn giải có kiểm tra. Hướng kết hợp phân đoạn hành động với RAG có giá trị cho Kaizen: mỗi con số trong báo cáo truy được về đoạn video và đoạn tài liệu đã tạo ra nó.
 
-\section*{Acknowledgment}
-\addcontentsline{toc}{section}{Acknowledgment}
-Nhóm cảm ơn ban tổ chức DENSO Factory Hacks 2026 và nhóm tác giả bộ dữ liệu HA4M \cite{ha4m}
-đã công bố dữ liệu. \todo{bổ sung lời cảm ơn khác nếu có}
+Trên người chưa thấy khi huấn luyện, MS-TCN vượt luật vùng khay (F1@50 34,3 so với 0, Acc 44,5\% so với 2,5\%), dù luật này là đối chứng yếu vì vùng khay được vẽ theo U001. Các nguyên nhân suy giảm mà nhóm xác định được đều nằm ở dữ liệu đầu vào: găng tay xoá phần lớn điểm ngón tay và người kiểm tra làm chậm hơn khoảng 1,5 lần. Bỏ điểm ngón tay và co giãn tốc độ nâng F1@50 từ 17,6 lên 34,3, giảm MAE thời lượng bước từ 4,23 xuống 2,80 giây. Ở tầng RAG, việc tách vai trò hoạt động đúng thiết kế: chương trình tính số, mô hình ngôn ngữ diễn giải, bộ kiểm tra chặn một con số không có trong dữ liệu phát hiện.
+
+Phần chưa đạt nằm ở khả năng khái quát và độ tin cậy của đầu ra. F1@50 giảm từ 79,1 khi kiểm định chéo trong U001 xuống 34,3 trên U002, và kiểm định chéo trong một người không chọn ra cấu hình chỉ thân, cấu hình đạt 54,5 trên U002. Sai số phân đoạn đi qua được bộ kiểm tra: 3 trong 7 phát hiện lệch chuẩn không đúng so với ranh giới chuẩn, trong đó hai bước bị báo nhanh hơn chuẩn trong khi thực tế chậm hơn, và \%VA của U002 bị đo thành 92,1\% thay vì 73,9\%.
+
+Ba hạn chế chính, trong đó lớn nhất là dữ liệu:
+\begin{enumerate}\setlength{\itemsep}{1pt}
+\item \textbf{Dữ liệu ít người.} Bộ dữ liệu quá nặng so với điều kiện của nhóm: mỗi video HA4M nén khoảng 12 GB, cả bộ 217 video khoảng 2,6 TB, trong khi ổ lưu trữ dùng chung chỉ còn 16–32 GB trống; nhóm phải xử lý tuần tự từng video; trích điểm khớp cho cả bộ sẽ mất khoảng 23 giờ CPU. Đến nay mới có 3 video của 2 người, khoảng 1,4\% bộ dữ liệu, trong đó một video bị hỏng phần cuối. Với một người huấn luyện và một người kiểm tra, nhóm chưa tách được ảnh hưởng của mô hình khỏi ảnh hưởng của người thao tác.
+\item \textbf{Mô hình chưa khái quát tốt và chưa chạy thời gian thực.} Một video khoảng 2 phút cần khoảng 8–9 phút xử lý, và MS-TCN cần phần video phía sau thời điểm đang xét, nên hệ thống hiện chỉ phân tích video đã ghi.
+\item \textbf{RAG và chỉ số Kaizen chưa được xác thực ngoài thực tế.} Kho tri thức là tài liệu mô phỏng 8 đoạn do nhóm biên soạn; bộ kiểm tra không xét đoạn được trích dẫn có hỗ trợ nhận định hay không; góc cổ tay 2D chỉ dùng để sàng lọc; và chưa có chuyên gia hay dữ liệu vận hành nào xác nhận các phát hiện.
+\end{enumerate}
+
+Nếu tiếp tục, nhóm ưu tiên thêm dữ liệu từ U003 trở đi và chọn mô hình bằng xác thực trên một người khác; sau đó xác nhận cấu hình chỉ thân kết hợp co giãn tốc độ; thử đặc trưng bền với găng tay (bộ phát hiện bàn tay tinh chỉnh trên ảnh có găng, hoặc chỉ dùng cổ tay với toạ độ tương đối theo vùng khay); xây tập truy vấn có nhãn để đánh giá truy xuất và việc trích dẫn có hỗ trợ nhận định; và hạ mức ưu tiên các phát hiện nằm ở vùng mô hình kém chắc chắn.

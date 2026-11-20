@@ -1,251 +1,318 @@
-% ============================== V. EXPERIMENTS AND RESULTS ==============================
-% Số liệu đã đo lấy từ run 20261016-055308_oracle_mediapipe_gemini_rag-report-2t (oracle + eval pred),
-% outputs/kinect_compare_U001_V001.json và `python -m kaizen.train.pose eval` (MediaPipe, U001_V002).
-% Ô \tbd = DRAFT, điền sau khi train/đánh giá trên nhiều subject.
+% Sinh từ cùng nguồn nội dung với bản Word.
 \section{Experiments and Results}
-\label{sec:exp}
 
-\subsection{Thiết lập thực nghiệm}
-\label{subsec:setup}
-\textbf{Dữ liệu.} Kết quả ở mục này được đo trên U001\_V001 và U001\_V002 của HA4M.
-Thực nghiệm huấn luyện dùng \todo{tập subject, cách chia train/val/test hoặc LOSO}.
-\textbf{Phần cứng.} \todo{CPU (số lõi), RAM, GPU nếu có}. Mọi bước suy luận trong bài chạy trên CPU.
-\textbf{Chỉ số.}
-\begin{itemize}
-  \item Pose: sai số pixel so với skeleton Kinect (trung vị, P90, tỷ lệ frame lệch $<50$\,px) và PCK@$\alpha$.
-        PCK@$\alpha$ là tỷ lệ khớp có sai số $<\alpha$ lần cạnh dài của khung người.
-  \item Phân đoạn bước: \Fone, MAE thời lượng bước, MAE mốc bắt đầu và kết thúc, sai số cycle time.
-        Với MS-TCN báo thêm độ chính xác frame, Edit và F1@\{10,25,50\} \cite{farha2019mstcn}.
-  \item LLM: tỷ lệ đạt validator ngay lần đầu và sau khi hỏi lại.
-\end{itemize}
+\subsection{Experimental Setup}\label{sec:e1}
 
-\subsection{Độ chính xác ước lượng cổ tay}
-\label{subsec:exp_pose}
-Bảng~\ref{tab:kinect} so sánh cổ tay MediaPipe với skeleton Kinect đã chiếu lên ảnh Color.
-Lưu ý rằng skeleton Kinect cũng là một ước lượng.
-Tay phải bám tốt: trung vị 24{,}5\,px và 95{,}1\% frame lệch dưới 50\,px, tức nhỏ hơn kích thước một khay trên ảnh $2048\times1536$.
-Tay trái kém tin cậy hơn (P90 151{,}6\,px) vì thường bị thân người và cụm lắp che.
-Tỷ lệ phát hiện người đạt 0{,}953 (V001) và 0{,}961 (V002).
-Trên U001\_V002, MediaPipe đạt PCK@0{,}05 bằng 58{,}4 và PCK@0{,}1 bằng 77{,}6 (trung bình mọi khớp COCO-17).
-Sai số trung vị là 23{,}3\,px ở cổ tay phải và 26{,}6\,px ở cổ tay trái.
+Thực nghiệm trả lời ba câu hỏi: mô hình học có vượt phương pháp quy tắc trên người mới không; yếu tố nào của dữ liệu giới hạn khả năng khái quát và biện pháp nào giúp được; sai số phân đoạn ảnh hưởng thế nào đến đầu ra RAG. U001 (hai video) dùng để huấn luyện, U002 (một video, chấm đến 108,6 giây như mục 3.5) dùng để kiểm tra. Kết quả kiểm tra là trung bình $\pm$ độ lệch chuẩn qua 5 seed; độ lệch này chỉ phản ánh khởi tạo và thứ tự huấn luyện, không phản ánh khác biệt giữa người.
 
-\begin{table}[t]
+Nhóm tách người huấn luyện và người kiểm tra vì trong triển khai thật, mô hình phải phân tích những công nhân chưa từng xuất hiện trong dữ liệu huấn luyện. Hai video của cùng một người có vị trí đứng, tầm vóc, cách cầm linh kiện và nhịp thao tác gần như giống nhau; nếu kiểm tra trên video khác của chính người đã dùng để huấn luyện, mô hình có thể đạt điểm cao chỉ nhờ ghi nhớ đặc điểm của người đó, tức là rò rỉ thông tin theo người. Kiểm tra trên một người độc lập gần với tình huống triển khai hơn, và dữ liệu kiểm tra không được dùng để lựa chọn mô hình. Kết quả ở mục~\ref{sec:same} cho thấy lựa chọn này cần thiết: cùng một cấu hình đạt F1@50 79,1 khi xác thực trên video khác của U001 nhưng chỉ 34,3 trên U002.
+
+Chỉ số theo khung hình gồm độ chính xác (Acc), điểm Edit (khoảng cách chỉnh sửa chuẩn hoá giữa chuỗi đoạn dự đoán và chuỗi đoạn chuẩn, đo phân mảnh và sai thứ tự), F1@k với ngưỡng IoU k $\in$ \{10, 25, 50\}\% và macro-F1 theo lớp, thang 0–100. Chỉ số theo bước, gần với nhu cầu đo thời gian, gồm F1@IoU0.5 khi ghép đoạn theo khoá bước và lần lặp (thang 0–1) và sai số tuyệt đối trung bình của thời lượng bước (MAE, giây). Sai số cycle time có tính nhưng không dùng để so sánh vì cửa sổ đánh giá bị cắt.
+
+Hai đối chứng chính là luật vùng khay (không huấn luyện, “trước huấn luyện”) và MS-TCN dùng đủ 105 chiều đặc trưng, không tăng cường. Các cấu hình khác được so sánh ở mục~\ref{sec:e5}.
+
+\subsection{Data Quality Analysis}\label{sec:e2}
+
+Trước khi huấn luyện, đầu vào của hai người được so sánh mà không dùng nhãn (Hình~\ref{fig:e1}). Khớp thân và cổ tay được phát hiện ở 88–100\% khung hình cho cả hai. Khác biệt nằm ở điểm ngón tay: tay phải hợp lệ ở 89\% khung hình của U001 nhưng chỉ 13\% của U002, tay trái 28\% và 5\%. Lý do thấy ngay ở Hình~\ref{fig:e2}: U002 đeo găng tay y tế. Vì vậy 42/105 chiều đặc trưng (toạ độ, vận tốc, mặt nạ của sáu điểm ngón tay) gần như luôn bằng 0 ở U002; sau chuẩn hoá theo U001, các chiều mặt nạ ngón tay phải lệch khoảng 6,4 độ lệch chuẩn. Toạ độ tuyệt đối lệch trung bình 1,27 độ lệch chuẩn (giữa hai video của U001 chỉ 0,03) vì U002 đứng và với tay ở chỗ khác trong ảnh.
+
+\begin{figure}[H]
 \centering
-\caption{Cổ tay MediaPipe so với skeleton Azure Kinect (U001\_V001)}
-\label{tab:kinect}
-\footnotesize
-\begin{adjustbox}{max width=\columnwidth}
-\begin{tabular}{@{}lrrrr@{}}
-\toprule
-Tay & Số frame & Trung vị (px) & P90 (px) & $<$50\,px (\%) \\
-\midrule
-Trái & 2148 & 26{,}1 & 151{,}6 & 77{,}7 \\
-Phải & 2314 & 24{,}5 & 43{,}4 & 95{,}1 \\
-\bottomrule
-\end{tabular}
-\end{adjustbox}
-\end{table}
-
-\begin{table}[t]
-\centering
-\caption{PCK so với Kinect trên người lắp chưa thấy (DRAFT)}
-\label{tab:pck}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{adjustbox}{max width=\columnwidth}
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-Backend & PCK@0{,}05 & PCK@0{,}1 & L-wrist (px) & R-wrist (px) \\
-\midrule
-MediaPipe (U001\_V002) & 58{,}4 & 77{,}6 & 26{,}6 & 23{,}3 \\
-RTMW-m & \tbd & \tbd & \tbd & \tbd \\
-RTMPose-m fine-tune & \tbd & \tbd & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{adjustbox}
-\end{table}
-
-\subsection{Phân đoạn bước}
-\label{subsec:exp_seg}
-\textbf{Baseline quy tắc.} \Cref{tab:seg} cho kết quả của baseline quy tắc (\cref{alg:rule}) so với nhãn HA4M.
-Trên V001, 15/17 đoạn được neo, với \Fone{} 0{,}75, MAE thời lượng 0{,}62\,s và sai số cycle time 0{,}6\,s.
-Trên V002, lần lặp thứ ba của bước 3 (3.2) và bước 5 không được neo, nên chỉ có 11/17 đoạn; \Fone{} đạt 0{,}714 và sai số cycle time 2{,}27\,s.
-Phân tích lỗi cho thấy ba nguồn chính:
-\begin{enumerate}
-  \item bước 9 không có khay đặc trưng nên không có mốc;
-  \item mốc bắt đầu bước 10 trễ 4{,}77\,s (V001) và 3{,}13\,s (V002), vì công nhân với tới khay nắp trước khi
-        kết thúc thao tác bước 9;
-  \item mốc kết thúc bước 12 lệch 2--3{,}5\,s, do bước 12 gồm cả việc trả lục giác và sản phẩm, không có sự kiện neo rõ.
-\end{enumerate}
-Các bước 1--8 có IoU từ 0{,}43 tới 0{,}80 và độ lệch mốc thường dưới 1\,s.
-
-\begin{table}[t]
-\centering
-\caption{Phân đoạn bước so với nhãn HA4M. Dòng MS-TCN là DRAFT.}
-\label{tab:seg}
-\footnotesize
-\setlength{\tabcolsep}{2.5pt}
-\begin{adjustbox}{max width=\columnwidth}
-\begin{tabular}{@{}llcccccc@{}}
-\toprule
-Phương pháp & Trial & Bước & \Fone & MAE dur & MAE start & MAE end & $\lvert\Delta$CT$\rvert$ \\
-            &       & neo/nhãn & & (s) & (s) & (s) & (s) \\
-\midrule
-Rule & V001 & 15/17 & 0{,}750 & 0{,}62 & 1{,}11 & 0{,}87 & 0{,}60 \\
-Rule & V002 & 11/17 & 0{,}714 & 0{,}92 & 0{,}80 & 1{,}05 & 2{,}27 \\
-\midrule
-MS-TCN (LOSO) & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
-MS-TCN (test) & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{adjustbox}
-\end{table}
-
-\textbf{MS-TCN (DRAFT).}
-\Cref{tab:mstcn} được điền từ đầu ra của \code{segmenter cv} và \code{segmenter eval}.
-\todo{Nhận xét: MS-TCN có tách được bước 9 (không khay) và sửa mốc bước 10, 12 hay không;
-so sánh \Fone{} với baseline 0{,}75/0{,}714; phân mảnh đoạn (Edit) trước và sau khi làm mượt.}
-
-\begin{table}[t]
-\centering
-\caption{MS-TCN, chỉ số chuẩn phân đoạn hành động (DRAFT)}
-\label{tab:mstcn}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{adjustbox}{max width=\columnwidth}
-\begin{tabular}{@{}lccccc@{}}
-\toprule
-Thiết lập & Acc & Edit & F1@10 & F1@25 & F1@50 \\
-\midrule
-LOSO, \tbd{} người & \tbd & \tbd & \tbd & \tbd & \tbd \\
-Test giữ riêng & \tbd & \tbd & \tbd & \tbd & \tbd \\
-Ablation: không $\mathcal{L}_{T\text{-}MSE}$ & \tbd & \tbd & \tbd & \tbd & \tbd \\
-Ablation: $S=1$ stage & \tbd & \tbd & \tbd & \tbd & \tbd \\
-Ablation: chỉ toạ độ theo thân & \tbd & \tbd & \tbd & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{adjustbox}
-\end{table}
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.9\textwidth]{gantt_U001_V001.png}\\[4pt]
-  \includegraphics[width=0.9\textwidth]{gantt_U001_V002.png}
-  \caption{Timeline Gantt các bước: nhãn HA4M (oracle) so với dự đoán bằng quy tắc, U001\_V001 (trên) và U001\_V002 (dưới).}
-  \label{fig:gantt}
+\includegraphics[width=0.88\linewidth]{fig_detect_rate.png}
+\caption{Tỉ lệ khung hình có điểm khớp hợp lệ theo nhóm khớp, người huấn luyện (U001) và người kiểm tra (U002).}\label{fig:e1}
 \end{figure}
 
-\subsection{Chỉ số Kaizen và phát hiện: nghiên cứu tình huống}
-\label{subsec:exp_case}
-Ở chế độ oracle, cycle time là 77{,}9\,s (V001) và 84{,}3\,s (V002).
-Trung bình là 81{,}1\,s với CV 0{,}056, dưới ngưỡng R6 (0{,}25).
-\%VA đạt 82{,}1\% và 85{,}3\%.
-Số lần lấy là 15 và 14.
-Quãng đường cổ tay trái và phải là 18\,660 và 13\,715\,px (V001).
-\Cref{fig:yamazumi} cho thấy thời lượng bước khá ổn định giữa hai lần lắp, trừ bước 9 (CV 0{,}395) và bước 12 (CV 0{,}231).
-
-So với thời gian chuẩn trong work instruction, V001 nằm trong ngưỡng $\pm30\%$ ở mọi bước (lệch từ $-4{,}8\%$ tới $+5{,}0\%$).
-V002 kích hoạt hai phát hiện R8:
-\begin{itemize}
-  \item bước 9 mất 14{,}97\,s so với chuẩn 8{,}5\,s ($+76{,}1\%$; ảnh hưởng 6{,}47\,s/chu kỳ);
-  \item bước 12 mất 14{,}77\,s so với chuẩn 11\,s ($+34{,}3\%$; 3{,}77\,s/chu kỳ).
-\end{itemize}
-R2 phát hiện thêm một lần lấy dư ở khay vít/lục giác (0{,}78\,s/chu kỳ).
-Tổng tiềm năng cải thiện là 5{,}5\,s/chu kỳ, tính bằng cộng thô ảnh hưởng của các phát hiện, chưa khử trùng lặp.
-Về Muri (\cref{tab:muri}), tay phải được đo trên gần 90\% frame và lệch $>30^\circ$ trong 11{,}5--15{,}2\% thời gian.
-Tay trái chỉ đo được khoảng 25\% frame vì điểm bàn tay hay mất. Vì vậy R7 chỉ đánh giá độ tin cậy \textit{low}
-và báo kèm độ phủ.
-R1 bị bỏ qua vì cần ít nhất 3 trial; R4 ở chế độ oracle xác nhận chuỗi nhãn khớp SOP 12 bước.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.8\textwidth]{yamazumi.png}
-  \caption{Biểu đồ Yamazumi: thời lượng các bước chồng theo trial (oracle).}
-  \label{fig:yamazumi}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.91\linewidth]{fig_gloves.png}
+\caption{Vùng tay phải tại cùng giai đoạn lắp ráp: (a) U001 tay trần; (b) U002 đeo găng tay.}\label{fig:e2}
 \end{figure}
 
-\begin{table}[t]
+U002 cũng làm chậm hơn và chậm không đều: chu kỳ 123,6 giây so với 77,9 và 84,3 giây của U001; bước 4 chậm khoảng 2,1 lần, bước 11 khoảng 2,8 lần, còn bước 7 và 10 gần như bằng U001.
+
+\subsection{Main Results}\label{sec:e3}
+
+Cấu hình chính là MS-TCN bỏ điểm ngón tay, co giãn tốc độ toàn chuỗi, huấn luyện 190 epoch; đây là cấu hình có F1@50 kiểm định chéo cao nhất (mục~\ref{sec:e5}). Bảng~\ref{tab:e1} so sánh nó với hai đối chứng trên U002.
+
+\begin{table}[H]
 \centering
-\caption{Muri: góc cổ tay 2D (sàng lọc)}
-\label{tab:muri}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{adjustbox}{max width=\columnwidth}
-\begin{tabular}{@{}llrrrr@{}}
+\caption{Kết quả trên người kiểm tra U002 (trung bình $\pm$ độ lệch chuẩn qua 5 seed)}\label{tab:e1}
+\scriptsize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.25}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.3cm}cccccccc@{}}
 \toprule
-Trial & Tay & Phủ (\%) & Trung vị (°) & $>30^\circ$ (\%) & P90 $\Delta$ (°) \\
-\midrule
-V001 & trái & 25{,}8 & 19{,}6 & 21{,}4 & 65{,}4 \\
-V001 & phải & 86{,}9 & 17{,}5 & 11{,}5 & 32{,}8 \\
-V002 & trái & 25{,}0 & 15{,}8 & 17{,}1 & 70{,}7 \\
-V002 & phải & 89{,}9 & 18{,}5 & 15{,}2 & 38{,}1 \\
+\textbf{Phương pháp} & \textbf{Acc} & \textbf{Edit} & \textbf{F1@10} & \textbf{F1@25} & \textbf{F1@50} & \textbf{Macro-F1} & \textbf{F1@IoU0.5} & \textbf{MAE bước (s)} \\\midrule
+Quy tắc theo vùng khay (không huấn luyện) & 2,5 & 11,8 & 0,0 & 0,0 & 0,0 & — & 0,00 & —* \\
+MS-TCN 105 chiều (200 epoch) & 33,3 $\pm$ 5,7 & 54,6 $\pm$ 11,5 & 38,6 $\pm$ 8,1 & 32,9 $\pm$ 5,4 & 17,6 $\pm$ 6,5 & 26,2 $\pm$ 7,1 & 0,21 $\pm$ 0,09 & 4,23 $\pm$ 1,43 \\
+\textbf{MS-TCN bỏ điểm ngón tay + co giãn (190 epoch)} & \textbf{44,5 $\pm$ 4,2} & \textbf{81,4 $\pm$ 5,6} & \textbf{52,7 $\pm$ 2,0} & \textbf{48,4 $\pm$ 5,9} & \textbf{34,3 $\pm$ 8,5} & \textbf{40,4 $\pm$ 3,6} & \textbf{0,36 $\pm$ 0,08} & \textbf{2,80 $\pm$ 0,42} \\
 \bottomrule
-\end{tabular}
-\end{adjustbox}
+\end{tabular}}
 \end{table}
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.8\textwidth]{frame_V001_step3.png}
-  \caption{Video overlay sinh tự động: bước hiện tại, tiến độ trong bước và chu kỳ, trạng thái hai tay, zone và vệt cổ tay
-  (U001\_V001, bước 3).}
-  \label{fig:overlay}
+{\small\itshape Ghi chú: * MAE của phương pháp quy tắc chỉ tính được trên 2 bước mà phương pháp này nhận ra, nên không so sánh với các dòng khác.\par}
+
+Luật vùng khay chỉ nhận ra 2 trên 16 bước (tính cả lần lặp), Acc 2,5\%: các vùng khay vẽ theo quỹ đạo tay của U001 không khớp với U002, nơi 102/142 sự kiện tay rơi vào vùng lắp ráp và tay chỉ vào vùng khay bốn lần. Đây là đối chứng yếu; nó cho thấy luật thủ công không chuyển được sang người mới nhiều hơn là cho thấy MS-TCN đã đủ tốt. MS-TCN đủ đặc trưng đạt Acc 33,3\% và F1@50 17,6. Cấu hình chính nâng Acc lên 44,5\%, Edit từ 54,6 lên 81,4, F1@50 lên 34,3, F1@IoU0.5 từ 0,21 lên 0,36, và giảm MAE thời lượng bước từ 4,23 xuống 2,80 giây. Mức tăng của Acc, Edit, F1@25 và macro-F1 lớn hơn nhiều lần độ lệch giữa các seed; F1@50 và F1@IoU0.5 còn dao động đáng kể, tức ranh giới bước trên người mới chưa ổn định.
+
+Cùng cấu hình này đạt F1@50 79,1 khi kiểm định chéo trong U001 nhưng chỉ 34,3 trên U002: mô hình nhận dạng khá tốt khi người làm chính là người huấn luyện, nhưng kém hẳn khi chuyển sang người mới. Khoảng cách này phù hợp với các khác biệt đầu vào ở mục~\ref{sec:e2} (găng tay, vị trí đứng, nhịp thao tác), và xác thực trong cùng người không phát hiện được nó: đường xác thực không đi xuống (mục~\ref{sec:e6}), còn trên U002 điểm số ngừng tăng từ khoảng epoch 90 (mục~\ref{sec:same}). Độ lệch $\pm$8,5 chỉ là dao động giữa 5 seed trên cùng một người kiểm tra, không phải dao động giữa các công nhân. Với một người kiểm tra, 34,3 là kết quả trên U002, chưa phải ước lượng cho công nhân nói chung; mô hình chưa chứng minh được hoạt động ổn định với nhiều người. Sai khác giữa người thao tác là nguồn biến thiên lớn mà mô hình hiện tại chưa xử lý tốt.
+
+\subsection{Same-Operator versus Unseen-Operator Testing}\label{sec:same}
+
+Trước khi có dữ liệu của U002, nhóm đã huấn luyện và kiểm tra trên cùng một người: huấn luyện trên một lần quay của U001, kiểm tra trên lần quay còn lại, theo cả hai chiều (V001 $\rightarrow$ V002 và V002 $\rightarrow$ V001). Hai mô hình thí điểm này dùng đủ 105 chiều đặc trưng, không tăng cường, huấn luyện cố định 100 epoch trên CPU với seed 0 và không có tập xác thực. Bảng~\ref{tab:same} đặt chúng cạnh \textbf{mô hình tốt nhất trong thực nghiệm} — cấu hình chính ở mục~\ref{sec:e3}, bỏ điểm ngón tay và co giãn tốc độ, 190 epoch — mô hình được dùng cho mọi so sánh trong chương này. Mô hình tốt nhất được đánh giá theo cả hai cách: cùng người (huấn luyện trên một lần quay của U001, đánh giá trên lần quay kia, 2 chiều $\times$ 5 seed) và khác người (huấn luyện trên cả hai lần quay của U001, kiểm tra trên U002, 5 seed). Số cùng người của mô hình tốt nhất lấy từ kiểm định chéo, nơi chính hai video này được dùng để chọn số epoch, nên có thể hơi lạc quan.
+
+\begin{table}[H]
+\centering
+\caption{Kiểm tra trên cùng người và trên người mới: mô hình thí điểm và mô hình tốt nhất}\label{tab:same}
+\scriptsize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.25}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{2.6cm}cccccccc@{}}
+\toprule
+\textbf{Thiết lập} & \textbf{Mô hình} & \textbf{Acc} & \textbf{Edit} & \textbf{F1@10} & \textbf{F1@25} & \textbf{F1@50} & \textbf{Macro-F1} & \textbf{F1@IoU0.5} & \textbf{MAE bước (s)} \\\midrule
+Cùng người, V001 $\rightarrow$ V002 & Thí điểm 105 chiều (1 seed) & 74,2 & 94,4 & 97,1 & 74,3 & 45,7 & 66,5 & 0,47 & 1,35 \\
+Cùng người, V002 $\rightarrow$ V001 & Thí điểm 105 chiều (1 seed) & 71,4 & 100,0 & 100,0 & 76,5 & 52,9 & 63,0 & 0,53 & 0,96 \\
+Cùng người, hai chiều & \textbf{Mô hình tốt nhất} (10 lần chạy) & 83,9 $\pm$ 3,8 & 97,9 $\pm$ 4,2 & 95,4 $\pm$ 5,1 & 91,9 $\pm$ 5,4 & 79,1 $\pm$ 10,1 & 79,5 $\pm$ 5,5 & 0,79 $\pm$ 0,10 & 0,90 $\pm$ 0,16 \\
+Khác người, U001 $\rightarrow$ U002 & \textbf{Mô hình tốt nhất} (5 seed) & 44,5 $\pm$ 4,2 & 81,4 $\pm$ 5,6 & 52,7 $\pm$ 2,0 & 48,4 $\pm$ 5,9 & 34,3 $\pm$ 8,5 & 40,4 $\pm$ 3,6 & 0,36 $\pm$ 0,08 & 2,80 $\pm$ 0,42 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Trên cùng người, cả mô hình thí điểm lẫn mô hình tốt nhất đều dựng lại gần đúng trình tự bước (Edit 94--100, F1@10 95--100). Mô hình tốt nhất nâng F1@50 cùng người từ 45,7 và 52,9 lên 79,1, nhưng một phần mức tăng đến từ số epoch: cấu hình 105 chiều huấn luyện 200 epoch trên GPU đạt 68,5 trong cùng kiểm định chéo (Bảng~\ref{tab:e2}). Sang người mới, cùng mô hình tốt nhất chỉ còn F1@50 34,3, Acc 44,5\% và MAE thời lượng bước 2,80 giây, so với 0,90 giây trên cùng người. Kết quả thí điểm vì vậy đánh giá quá cao khả năng triển khai, và đây là lý do nhóm chuyển sang kiểm tra trên một người độc lập (mục~\ref{sec:e1}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\linewidth]{fig_bench_epoch.png}
+\caption{Benchmark theo epoch: F1@50 của mô hình tốt nhất trên cùng người (kiểm định chéo U001, trung bình 10 lần chạy) và trên người mới (U002, trung bình 5 seed, đánh giá mọi checkpoint chỉ để phân tích), cùng hai mô hình thí điểm 105 chiều; vùng mờ là $\pm$ một độ lệch chuẩn.}\label{fig:bench}
 \end{figure}
 
-\subsection{Diễn giải LLM có kiểm chứng}
-\label{subsec:exp_llm}
-\Cref{tab:llm} tổng hợp tỷ lệ đạt validator qua các run.
-Trong run có 4 phát hiện với RAG, Gemini 2.5 Flash đạt 3/4 ngay lần đầu.
-Câu trả lời còn lại đạt sau một lần hỏi lại có phản hồi lỗi, nên tỷ lệ cuối là 100\%.
-Mọi trích dẫn đều là \code{chunk\_id} có trong kho, và bảng tài liệu tham chiếu khớp hai chiều với các nhãn trong báo cáo.
-Một bài học thực tế: ở lần chạy Gemini đầu tiên, câu ``phân vị 90'' bị đánh trượt oan
-vì số 90 chỉ xuất hiện trong tên trường \code{dev\_p90\_deg}.
-Sau khi bổ sung tập $\mathcal{N}(f)$ vào whitelist (\cref{eq:whitelist}), lỗi này không còn.
-Validator không bắt được lỗi \textit{ngữ nghĩa}, ví dụ một con số có thật nhưng được gán sai ý.
-Phần này vẫn cần kỹ sư IE duyệt.
+Hình~\ref{fig:bench} theo dõi F1@50 qua các checkpoint. Trên cùng người, F1@50 xác thực của mô hình tốt nhất tăng gần như liên tục, từ 58,9 ở epoch 90 lên 79,1 ở epoch 190. Trên U002, cùng mô hình đạt cao nhất 42,0 $\pm$ 8,4 ở epoch 90 rồi giảm về 34,3 ở epoch 190; mức giảm này ngang độ lệch giữa các seed, nhưng Edit giảm rõ hơn, từ 97,8 ở epoch 110 xuống 81,4. Huấn luyện thêm giúp mô hình khớp người huấn luyện hơn nhưng không giúp người mới, và tiêu chí chọn epoch dựa trên cùng người không thấy được điều này. Số epoch 190 vẫn được giữ vì đã được chọn trước khi xem kết quả kiểm tra; đường của U002 ở đây chỉ dùng để phân tích.
 
-\begin{table}[t]
+\subsection{Before and After Training: Qualitative Comparison}\label{sec:e4}
+
+Hình~\ref{fig:e3} đặt nhãn chuẩn cạnh dự đoán của bốn trạng thái trên U002: trước huấn luyện (luật vùng khay), sau 10 epoch, và sau huấn luyện với hai tập đặc trưng. Xanh là khung hình đúng, cam là sai; nhãn trên thanh là khoá bước dự đoán; số bên phải là Acc của seed 0.
+
+\begin{figure}[H]
 \centering
-\caption{Tỷ lệ đạt validator của tầng LLM}
-\label{tab:llm}
+\includegraphics[width=0.97\linewidth]{fig_gantt_before_after.png}
+\caption{Dự đoán trên video U002\_V001 trước, trong và sau huấn luyện so với nhãn chuẩn (seed 0).}\label{fig:e3}
+\end{figure}
+
+Luật vùng khay để gần cả video ở trạng thái chưa phân loại. Sau 10 epoch, MS-TCN mới nhận được vài bước đầu chu kỳ và gán phần lớn thời gian cho một vài lớp. Sau huấn luyện, mô hình đủ đặc trưng giữ đúng thứ tự nhưng “chạy trước” nhãn: các bước giữa chu kỳ kết thúc sớm, bước 12 bắt đầu từ khoảng giây 87 trong khi người làm vẫn ở bước 11, vì mô hình học nhịp của U001 và dựa vào đặc trưng bàn tay không còn ở U002. Mô hình chính sửa phần lớn lỗi này ở bước 4–10; ranh giới bước 8, 9 và 10 gần trùng nhãn chuẩn. Lỗi còn lại nằm ở các lần lặp đầu chu kỳ (2.x, 3.x) và ở cuối, nơi phần lớn bước 11 vẫn bị gán thành bước 12 (mục~\ref{sec:e7}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\linewidth]{fig_perclass.png}
+\caption{F1 theo khung hình của từng lớp trên U002, MS-TCN đủ đặc trưng và MS-TCN cấu hình chính (trung bình 5 seed).}\label{fig:e4}
+\end{figure}
+
+Theo lớp (Hình~\ref{fig:e4}), cải thiện lớn nhất ở các bước giữa chu kỳ: 6.0 (11 $\rightarrow$ 72), 2.0 (14 $\rightarrow$ 60), 8.0 (56 $\rightarrow$ 91), 1.0 (62 $\rightarrow$ 96), 5.0 (22 $\rightarrow$ 54). Các bước có hình thái và vị trí rõ (1.0, 9.0, 10.0) đạt F1 cao ở cả hai mô hình. Các lần lặp 2.x, 3.x và 11.1 vẫn thấp: tư thế giữa các lần lặp gần như giống nhau, nên mô hình phải dựa vào vị trí trong chuỗi, chính thông tin bị nhiễu khi nhịp thao tác thay đổi.
+
+\subsection{Ablation Study}\label{sec:e5}
+
+Bảng~\ref{tab:e2} tổng hợp bảy cấu hình theo hai trục: tập đặc trưng (đủ 105 chiều, bỏ điểm ngón tay 63 chiều, chỉ thân không toạ độ tuyệt đối 45 chiều) và co giãn tốc độ (không, toàn chuỗi, theo đoạn). Mọi cấu hình dùng cùng giao thức, 5 seed và giải mã theo nhãn lớn nhất.
+
+\begin{table}[H]
+\centering
+\caption{Nghiên cứu loại bỏ thành phần: kiểm định chéo trên U001 và kiểm tra trên U002}\label{tab:e2}
 \footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{adjustbox}{max width=\columnwidth}
-\begin{tabular}{@{}llccc@{}}
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.197\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.046\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.100\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.113\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.109\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.113\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.113\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.113\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.096\linewidth-2\tabcolsep\relax}@{}}
 \toprule
-Provider / model & Ngữ cảnh & \#finding & Lần đầu & Sau retry \\
-\midrule
-Gemini 2.5 Flash & RAG (WI + KB) & 4 & 75\% & 100\% \\
-Gemini 2.5 Flash & RAG & 1 & 100\% & 100\% \\
-Gemini 3.8 Flash & KB/SOP tĩnh & 1 & 100\% & 100\% \\
-Claude Sonnet 4.6 & RAG & \tbd & \tbd & \tbd \\
-GPT-4.1 mini & RAG & \tbd & \tbd & \tbd \\
+\textbf{Tập đặc trưng} & \textbf{D} & \textbf{Co giãn} & \textbf{CV F1@50} & \textbf{Test Acc} & \textbf{Test Edit} & \textbf{Test F1@50} & \textbf{F1@IoU0.5} & \textbf{MAE (s)} \\\midrule
+Đầy đủ & 105 & Không & 68,5 $\pm$ 8,5 & 33,3 $\pm$ 5,7 & 54,6 $\pm$ 11,5 & 17,6 $\pm$ 6,5 & 0,21 $\pm$ 0,09 & 4,23 $\pm$ 1,43 \\
+Đầy đủ & 105 & Toàn chuỗi & 74,1 $\pm$ 10,3 & 35,3 $\pm$ 11,3 & 62,1 $\pm$ 16,4 & 21,8 $\pm$ 9,0 & 0,23 $\pm$ 0,09 & 5,37 $\pm$ 1,92 \\
+Đầy đủ & 105 & Theo đoạn & 74,2 $\pm$ 12,4 & 28,5 $\pm$ 5,6 & 51,0 $\pm$ 11,1 & 10,6 $\pm$ 6,0 & 0,12 $\pm$ 0,06 & 6,06 $\pm$ 1,35 \\
+Bỏ điểm ngón tay & 63 & Không & 73,7 $\pm$ 5,1 & 39,2 $\pm$ 3,2 & 66,5 $\pm$ 10,2 & 28,1 $\pm$ 7,0 & 0,30 $\pm$ 0,07 & 2,66 $\pm$ 0,35 \\
+\textbf{Bỏ điểm ngón tay} & \textbf{63} & \textbf{Toàn chuỗi} & \textbf{79,1 $\pm$ 10,1} & \textbf{44,5 $\pm$ 4,2} & \textbf{81,4 $\pm$ 5,6} & \textbf{34,3 $\pm$ 8,5} & \textbf{0,36 $\pm$ 0,08} & \textbf{2,80 $\pm$ 0,42} \\
+Chỉ thân & 45 & Không & 68,1 $\pm$ 10,1 & 37,2 $\pm$ 2,2 & 74,2 $\pm$ 8,7 & 24,3 $\pm$ 5,7 & 0,24 $\pm$ 0,06 & 2,59 $\pm$ 0,36 \\
+Chỉ thân \textdagger{} & 45 & Toàn chuỗi & 75,5 $\pm$ 15,5 & 55,4 $\pm$ 6,4 & 92,1 $\pm$ 11,4 & 54,5 $\pm$ 16,3 & 0,57 $\pm$ 0,16 & 2,34 $\pm$ 0,46 \\
 \bottomrule
 \end{tabular}
-\end{adjustbox}
 \end{table}
 
-\subsection{Thời gian chạy}
-\label{subsec:exp_runtime}
-Trên CPU, việc trích keypoint MediaPipe đạt khoảng 7{,}2--7{,}6\,fps, tức khoảng 6 phút cho mỗi video 80\,s.
-Đây là bước chậm nhất, và kết quả được tái sử dụng giữa các run.
-Các bước 02$\to$08 mất khoảng 8--9\,s cho 2 trial, chưa tính thời gian gọi LLM.
-Render video overlay mất khoảng 2 phút mỗi video.
-Suy luận MS-TCN: \todo{ms/video trên CPU}.
-So với 2--4 giờ bấm giờ thủ công cho mỗi trạm, hệ thống cho số liệu của mọi chu kỳ đã quay,
-thay vì chỉ vài chu kỳ được lấy mẫu.
+{\small\itshape Ghi chú: dòng in đậm là cấu hình chính (điểm kiểm định chéo cao nhất); \textdagger{} là cấu hình có kết quả kiểm tra cao nhất nhưng không được chọn theo kiểm định chéo.\par}
 
-\subsection{Thảo luận và giới hạn}
-\label{subsec:limits}
-\begin{itemize}
-  \item \textbf{Quy mô dữ liệu.} Các số liệu đo được mới chỉ từ hai lần lắp của một người.
-        Các chỉ số Mura giữa người và R1 cần nhiều trial và nhiều người hơn mới có ý nghĩa thống kê.
-  \item \textbf{Phụ thuộc cấu hình trạm.} Zone được vẽ tay cho một camera cố định.
-        Baseline quy tắc không tách được bước không có khay.
-        Đặc trưng kp\_v1 dùng cả toạ độ tuyệt đối, nên một trạm hoặc camera mới cần dữ liệu có nhãn để train lại.
-  \item \textbf{Đơn vị và hiệu chuẩn.} Quãng đường đang tính theo pixel (\code{px\_per\_cm}\,=\,null).
-        Ngưỡng moving/still (120\,px/s) được chỉnh theo đồ thị tốc độ, chưa hiệu chuẩn hệ thống.
-  \item \textbf{Muri 2D.} Góc chiếu phụ thuộc hướng camera, và tay trái chỉ đo được khoảng 25\% số frame.
-        Chỉ số này chỉ dùng để sàng lọc.
-  \item \textbf{Nhãn giả cho pose.} Fine-tune bằng skeleton Kinect có thể học cả sai số của Kinect.
-\end{itemize}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.84\linewidth]{fig_cv_vs_test.png}
+\caption{F1@50 kiểm định chéo trong cùng người và kiểm tra trên người mới theo từng cấu hình.}\label{fig:e5}
+\end{figure}
+
+Bỏ điểm ngón tay giúp ở mọi chế độ tăng cường: F1@50 tăng từ 17,6 lên 28,1 khi không co giãn và từ 21,8 lên 34,3 khi co giãn toàn chuỗi; MAE thời lượng bước giảm từ 4,2 xuống 2,7 giây và các seed ít chênh nhau hơn. Kết quả khớp với mục~\ref{sec:e2}: mô hình học trên U001 dựa vào điểm ngón tay, thứ gần như không có ở U002. Co giãn tốc độ chỉ giúp rõ khi đặc trưng đã tin cậy: với 105 chiều, mức tăng (17,6 $\rightarrow$ 21,8) nhỏ hơn độ lệch giữa các seed; sau khi bỏ điểm ngón tay, nó nâng F1@50 từ 28,1 lên 34,3. Co giãn theo đoạn có điểm kiểm định chéo cao nhưng kém nhất trên U002 (10,6).
+
+Cấu hình chỉ thân, bỏ toạ độ tuyệt đối, cộng co giãn toàn chuỗi cho kết quả kiểm tra cao nhất: F1@50 54,5 $\pm$ 16,3, Acc 55,4\%, Edit 92,1, F1@IoU0.5 0,57; không co giãn thì cùng tập đặc trưng chỉ đạt 24,3. Điều này phù hợp với chẩn đoán dịch chuyển miền: bỏ toạ độ tuyệt đối loại lệch vị trí đứng, co giãn loại lệch nhịp, và chỉ khi loại cả hai mô hình mới phải dựa vào chuyển động tương đối. Nhưng các seed chênh nhau rất lớn ($\pm$16,3) và cấu hình này chỉ xếp thứ 2 theo kiểm định chéo (75,5 so với 79,1), nên theo quy tắc đã định nó không được chọn. Nhóm không đổi cấu hình chính theo kết quả này: nếu chọn lại theo số trên U002, U002 trở thành tập xác thực và con số 54,5 không còn là kết quả trên một người chưa thấy. Cấu hình chỉ thân là ứng viên cần xác nhận trên người khác.
+
+Thứ hạng theo kiểm định chéo trong một người chỉ tương quan vừa phải với thứ hạng trên người mới (Spearman 0,43, bảy cấu hình). Hai video của cùng một người có vị trí đứng và nhịp gần như không đổi, nên kiểm định chéo ở đây đo khả năng nội suy giữa các lần làm của một người, không đo khả năng khái quát sang người khác. Cấu hình tốt nhất theo xác thực vì vậy chưa chắc là cấu hình chuyển sang người mới tốt nhất; muốn tiêu chí chọn mô hình khớp với mục tiêu, tập xác thực cần là một người khác.
+
+\begin{table}[H]
+\centering
+\caption{Ảnh hưởng của cách giải mã trên cấu hình chính}\label{tab:e3}
+\footnotesize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.278\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.120\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.120\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.120\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.120\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.120\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.120\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Giải mã} & \textbf{CV F1@50} & \textbf{Test Acc} & \textbf{Test Edit} & \textbf{Test F1@50} & \textbf{F1@IoU0.5} & \textbf{MAE (s)} \\\midrule
+Nhãn lớn nhất từng khung hình & 79,1 $\pm$ 10,1 & 44,5 $\pm$ 4,2 & 81,4 $\pm$ 5,6 & 34,3 $\pm$ 8,5 & 0,36 $\pm$ 0,08 & 2,80 $\pm$ 0,42 \\
+Ràng buộc thứ tự SOP & 79,4 $\pm$ 10,3 & 44,4 $\pm$ 4,5 & 100,0 $\pm$ 0,0 & 35,3 $\pm$ 7,4 & 0,36 $\pm$ 0,08 & 3,41 $\pm$ 0,44 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Giải mã SOP luôn cho Edit 100 vì thứ tự bị ép đúng, nên Edit không còn ý nghĩa trong so sánh này (Bảng~\ref{tab:e3}). Các chỉ số còn lại chênh nhau ít hơn độ lệch giữa các seed, còn MAE thời lượng bước tăng (2,80 $\rightarrow$ 3,41 giây). Giải mã SOP cũng che mất sai lệch thứ tự, thông tin cần cho Kaizen, nên hệ thống giữ giải mã theo nhãn lớn nhất.
+
+\subsection{Learning Curves and Generalization}\label{sec:e6}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.94\linewidth]{fig_learning.png}
+\caption{Đường học trong kiểm định chéo trên U001 (trung bình 10 lần chạy; vùng mờ là $\pm$ một độ lệch chuẩn).}\label{fig:e6}
+\end{figure}
+
+Mất mát huấn luyện giảm đều đến epoch 200 ở cả hai cấu hình; co giãn làm mất mát cao hơn một chút vì mỗi epoch thấy một phiên bản khác của chuỗi (Hình~\ref{fig:e6}). F1@50 xác thực tăng nhanh trong 60 epoch đầu rồi dao động quanh một mức ổn định, không đi xuống; số epoch được chọn (200 và 190) nằm trong vùng này. Nếu chỉ nhìn đường xác thực thì mô hình không quá khớp. Benchmark ở mục~\ref{sec:same} cho thấy điều ngược lại ở người mới: sau epoch 90, điểm trên U002 không tăng thêm trong khi điểm xác thực vẫn tăng. Mô hình tiếp tục khớp người huấn luyện mà không giúp người mới, và dừng sớm theo xác thực trong một người không nhận ra điều đó.
+
+\subsection{Error Analysis}\label{sec:e7}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{fig_confusion.png}
+\caption{Ma trận nhầm lẫn theo khung hình của cấu hình chính trên U002 (seed 0, \% theo hàng; bỏ hàng 12.0 vì chỉ có một khung hình trong cửa sổ đánh giá).}\label{fig:e7}
+\end{figure}
+
+Lỗi chủ yếu là lệch một vị trí dọc theo trình tự SOP, không phải nhầm sang thao tác khác hẳn (Hình~\ref{fig:e7}). Đầu chu kỳ mô hình chậm một bước: 62\% khung hình của 2.1 bị gán 2.0, 100\% của 3.0 bị gán 2.1, 99\% của 3.1 bị gán 2.2. Nửa sau mô hình đi trước một bước: 68\% của 5.0 bị gán 6.0, 66\% của 7.0 bị gán 8.0, 77\% của 11.0 và 90\% của 11.1 bị gán 12.0. Mô hình nắm đúng thứ tự nhưng đặt sai thời điểm chuyển bước khi nhịp của người mới khác người huấn luyện, nên Edit cao mà F1@50 thấp. Với đủ 105 chiều, kiểu lệch này xảy ra cả ở các bước giữa chu kỳ (mục~\ref{sec:e4}), và bỏ điểm ngón tay sửa được phần lớn đoạn đó; điều này phù hợp với việc mất điểm bàn tay chủ yếu làm sai thời điểm chuyển bước, không tạo ra nhầm lẫn giữa các thao tác khác hẳn nhau. Lệch lần lặp trong cùng một thao tác (2.1 bị gán 2.0) chỉ làm sai thời lượng từng lần lặp, còn tổng thời lượng thao tác gần như giữ nguyên. Khi lệch vượt sang thao tác khác thì sai số đi thẳng vào tầng đánh giá: khung hình của 3.0 và 3.1 bị tính cho thao tác 2, và khung hình của 11.x bị tính cho bước 12 (mục~\ref{sec:e8}). Lớp nền chỉ đúng 41\%, phần còn lại bị gán cho bước kề vì các đoạn nền ngắn.
+
+\textbf{Chi phí xử lý và giới hạn thời gian thực.} Trích điểm khớp là khâu chậm nhất: khoảng 7 phút cho một video 2 phút, tức 7,9 khung hình/giây trên CPU, khoảng một phần tư tốc độ ghi hình 30 khung hình/giây. MS-TCN nhỏ (khoảng 0,67 triệu tham số): suy luận một video mất khoảng 180 mili giây; huấn luyện mất 0,12 giây mỗi epoch trên GPU so với 0,32 giây trên CPU 3 luồng. Phần từ điểm khớp đến báo cáo mất 99 giây, trong đó khoảng 50 giây là gọi mô hình ngôn ngữ. Suy luận MS-TCN nhanh vì vậy không có nghĩa cả hệ thống chạy được thời gian thực: một video khoảng 2 phút cần khoảng 8–9 phút xử lý, phần lớn nằm ở trích điểm khớp và gọi mô hình ngôn ngữ. Hệ thống hiện là xử lý ngoại tuyến. Nhóm chưa chạy thử trên luồng video trực tiếp và chưa đo độ trễ đầu–cuối trong điều kiện vận hành. Muốn có kết quả ngay sau mỗi chu kỳ (gần thời gian thực), cần trích điểm khớp nhanh hơn tốc độ ghi hình, và MS-TCN phải bỏ phần ngữ cảnh phía sau thời điểm đang xét (mục 4.2).
+
+\subsection{RAG Case Study on an Unseen Operator}\label{sec:e8}
+
+Toàn bộ luồng chạy trên U002 với cấu hình chính (seed 0), Gemini 3.5 Flash-Lite và kho tri thức 8 đoạn do nhóm biên soạn. Đầu vào của tầng RAG là bảng bước do MS-TCN phân đoạn. Từ hướng dẫn công việc, hệ thống tìm được thời gian chuẩn của cả 12 bước và ngưỡng chênh lệch 30\%; quy tắc tạo 10 phát hiện, và mô hình ngôn ngữ diễn giải cả 10. Hình~\ref{fig:e8} là bảng bước của video trên giao diện web, Hình~\ref{fig:e9} là hai thẻ phát hiện F03 và F04 kèm diễn giải.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.97\linewidth]{web_brain.png}
+\caption{Trang chi tiết video U002\_V001 trên giao diện web: bảng bước với thời gian chuẩn, độ lệch và nguồn chuẩn (vượt ngưỡng $\pm$30\% tô đỏ).}\label{fig:e8}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.91\linewidth]{web_findings.png}
+\caption{Hai thẻ phát hiện trên giao diện web: quan sát, giả thuyết, đề xuất kèm nhóm ECRS, cách đo lại, nguồn trích dẫn và trạng thái kiểm tra.}\label{fig:e9}
+\end{figure}
+
+\textbf{Truy xuất và sinh cho một phát hiện.} Bảng~\ref{tab:e5} trình bày chuỗi xử lý cho phát hiện về bước 9, bước mà cả hai nguồn ranh giới đều xác nhận chậm hơn chuẩn (Bảng~\ref{tab:e4}).
+
+\begin{table}[H]
+\centering
+\caption{Chuỗi xử lý RAG cho phát hiện F03 (bước 9, U002)}\label{tab:e5}
+\footnotesize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.240\linewidth-2\tabcolsep\relax}>{\raggedright\arraybackslash}p{\dimexpr 0.760\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Thành phần} & \textbf{Nội dung} \\\midrule
+Phát hiện (chương trình) & R8 – bước 9 “Pick up Block 2 and place it on Block 1”: thời lượng 14,67 s, chuẩn 8,5 s, lệch +72,6\% > ngưỡng 30\%; đoạn video 57,67–72,33 s; nguồn chuẩn và ngưỡng: hướng dẫn công việc, trang 1 \\
+Truy vấn & lệch thời gian chuẩn · tên chỉ số · tên bước 9 \\
+Top-4 đoạn (cosine) & 0,872 – Tri thức Kaizen, Mura, Yamazumi, phân tích biến động\newline 0,865 – Hướng dẫn công việc, mục 4 – Xử lý bất thường\newline 0,862 – Tri thức Kaizen, 3M, bảy lãng phí, nguyên tắc tiết kiệm động tác\newline 0,861 – Hướng dẫn công việc, mục 1 – Bảng trình tự và TG chuẩn \\
+Quan sát & Bước 9 thực hiện trong 14.67 s, chênh lệch 72.6\% so với thời gian chuẩn 8.5 s. \\
+Giả thuyết & Giả thuyết nguyên nhân do khó khăn khi căn chỉnh Block 2 với Block 1 trên đồ gá. \\
+Đề xuất / ECRS & Cải tiến chốt định vị trên đồ gá để thao tác căn chỉnh ở bước 9 nhanh hơn. (nhóm R – Rearrange) \\
+Cách đo lại & Đo lại thời lượng bước 9 sau khi cải tiến chốt. \\
+Trích dẫn & Tri thức Kaizen – Mura, Yamazumi, phân tích biến động; Hướng dẫn công việc – mục 4 – Xử lý bất thường \\
+Kiểm tra & Đạt ngay lần đầu: không có số lạ, mã trích dẫn tồn tại, định dạng hợp lệ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Truy xuất là điểm yếu: bốn đoạn trả về có độ tương đồng rất sát nhau (0,861–0,872) và chiếm nửa kho tám đoạn, nên thứ hạng ít thông tin. Đoạn chứa bảng thời gian chuẩn của bước 9 chỉ đứng thứ tư. Khi truy vấn trực tiếp bằng tên bước trên trang tài liệu (Hình~\ref{fig:e10}), đoạn bảng đó đứng đầu với điểm 0,873, tức cách sinh truy vấn từ phát hiện ảnh hưởng rõ đến thứ hạng. Ở bước sinh, diễn giải bám số liệu đã cho, nêu nguyên nhân dưới dạng giả thuyết và đề xuất một hành động đo lại được. Nhưng một trong hai đoạn được trích dẫn (xử lý bất thường) không hỗ trợ đề xuất về đồ gá; bộ kiểm tra vẫn chấp nhận vì mã đoạn tồn tại, đúng giới hạn đã nêu ở mục 3.6.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\linewidth]{web_rag.png}
+\caption{Trang tài liệu RAG trên giao diện web: top-4 đoạn cho truy vấn trực tiếp về thời gian chuẩn của bước 9.}\label{fig:e10}
+\end{figure}
+
+\textbf{Kiểm tra và sinh lại.} Phát hiện F04 (bước 8 chậm 107,9\%) minh hoạ cơ chế này. Lần đầu mô hình đề xuất “bố trí lại khay K8 trong tầm với 40 cm”; bộ kiểm tra từ chối vì số 40 không thuộc tập số của phát hiện. Sau phản hồi, mô hình bỏ con số và bản ghi đạt. Giá trị 40 cm thực ra có trong đoạn an toàn – công thái học đã truy xuất, nên con số có căn cứ; bộ kiểm tra chỉ chấp nhận số từ dữ liệu đo nên thiên về an toàn, và cho phép số có trong chính các đoạn được trích dẫn là một cải tiến hợp lý. Trên mười phát hiện, 9/10 đạt ở lần đầu, 10/10 sau sửa, không phản hồi nào không đọc được.
+
+\textbf{Trường hợp chưa đáng tin cậy: sai số phân đoạn lan sang phát hiện.} Để tách sai số của mô hình khỏi chênh lệch thật, luồng được chạy lại với ranh giới bước từ nhãn chuẩn (Bảng~\ref{tab:e4}).
+
+\begin{table}[H]
+\centering
+\caption{Phát hiện lệch thời gian chuẩn (quy tắc R8) với ranh giới dự đoán và ranh giới chuẩn trên U002}\label{tab:e4}
+\footnotesize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.091\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.273\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.109\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.155\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.155\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.218\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Bước} & \textbf{Tên bước} & \textbf{TG chuẩn (s)} & \textbf{Lệch – ranh giới dự đoán} & \textbf{Lệch – ranh giới chuẩn} & \textbf{Đánh giá} \\\midrule
+2 & Gear Bearings ($\times$3) & 9,5 & +101,4\% & — & Báo nhầm \\
+3 & Planet Gears ($\times$3) & 8,0 & — & +35,9\% & Bỏ sót \\
+4 & Carrier Shaft & 3,8 & -65,0\% & +118,4\% & \textbf{Sai dấu} \\
+6 & Sun Gear & 3,4 & +102,1\% & +65,6\% & Khớp chiều \\
+8 & Ring Bear & 4,2 & +107,9\% & +62,6\% & Khớp chiều \\
+9 & Block 2 lên Block 1 & 8,5 & +72,6\% & +89,8\% & Khớp chiều \\
+11 & Screw ($\times$2) & 9,5 & -66,3\% & +172,6\% & \textbf{Sai dấu} \\
+12 & Allen Key, siết vít & 11,0 & +97,0\% & +47,5\% & Khớp chiều \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Trong 8 bước có phát hiện ở ít nhất một nguồn, 4 bước được hai nguồn đánh giá cùng chiều (bước 6, 8, 9 và 12 chậm hơn chuẩn), 1 bước bị báo nhầm, 1 bước bị bỏ sót và 2 bước bị báo ngược chiều. Cả bốn lỗi đều truy được về lỗi phân đoạn ở mục~\ref{sec:e7}. Báo nhầm ở bước 2 và bỏ sót ở bước 3 có cùng nguồn: khung hình của 3.0 và 3.1 bị gán thành 2.1 và 2.2, nên thao tác 2 dài ra còn thao tác 3 ngắn lại. Ở hai bước bị báo ngược chiều, bước 11 thực tế dài hơn chuẩn 172,6\%, nhưng mô hình chuyển sang bước 12 sớm nên đo ra ngắn và báo nhanh hơn chuẩn; bước 4 cũng vậy. Mức độ của bước 12 bị phóng đại (+97,0\% so với +47,5\%) vì nhận thêm thời gian của bước 11. Hệ thống xếp phát hiện nhanh hơn chuẩn ở mức thông tin và gợi ý kiểm tra khả năng bỏ sót thao tác hoặc lệch ranh giới — đúng trường hợp này — nhưng bộ kiểm tra không bắt được lỗi vì số trong diễn giải vẫn khớp số đo. Mỗi phát hiện vì thế kèm khoảng thời gian video để người phụ trách xem lại.
+
+\textbf{Ý nghĩa của kết quả 10/10.} Bộ kiểm tra xác nhận ba điều: bản ghi JSON đúng định dạng, mọi con số có trong dữ liệu phát hiện, và mã trích dẫn tồn tại trong kho. Nó không xác nhận đoạn được trích dẫn có hỗ trợ nhận định, cũng không xác nhận số đo đầu vào đúng. Vì vậy 10/10 đạt kiểm tra không có nghĩa là 10/10 diễn giải đúng: trong 7 phát hiện lệch chuẩn của bản dự đoán, 3 phát hiện (bước 2, 4 và 11) không đúng so với ranh giới chuẩn, và ở F03 một trích dẫn không hỗ trợ đề xuất. Mục này chỉ phân tích chi tiết hai phát hiện; nhóm chưa đánh giá có hệ thống tính đúng về nội dung. Kho tri thức là tài liệu mô phỏng do nhóm biên soạn và hệ thống chưa chạy trong nhà máy. RAG nối được số liệu phân tích với tài liệu hướng dẫn và cho khuyến nghị truy vết được nguồn, nhưng độ tin cậy của khuyến nghị vẫn phụ thuộc vào chất lượng tài liệu, chất lượng phân đoạn và việc người phụ trách đọc lại đoạn được trích dẫn.
+
+\subsection{Kaizen Report and 3M Indicators}\label{sec:e9}
+
+Với mỗi video, khối báo cáo tạo một tài liệu gồm bảng bước với độ lệch so với chuẩn, biểu đồ, các phát hiện xếp theo mức ưu tiên (mỗi phát hiện có diễn giải, nhóm ECRS, cách đo lại, trích dẫn và ảnh bằng chứng) và bảng tài liệu tham chiếu; giao diện web hiển thị cùng nội dung (Hình~\ref{fig:e8}–\ref{fig:e9}). Trang so sánh 3M tính ba chỉ số trên nhiều video, và các thành phần của chúng không cùng mức tin cậy. Cycle time và thời lượng bước là số đo trực tiếp từ ranh giới bước. \%VA (tổng thời lượng các bước tạo giá trị chia cho cycle time) phụ thuộc quy ước phân loại bước trong cấu hình trạm do nhóm khai báo, trong đó bước 1 và 11 được xếp là không tạo giá trị. Số lần lấy linh kiện và thời gian chờ của từng tay là đại lượng đại diện, suy ra từ luật vùng khay. Muda so sánh các đại lượng này, lấy video nhanh nhất làm tham chiếu. Mura là hệ số biến thiên CV = độ lệch chuẩn / trung bình của cycle time và của từng bước giữa các video. Muri là tỉ lệ thời gian góc cổ tay lệch quá 30°, ước lượng 2D và chỉ mang tính sàng lọc; dòng có độ phủ dưới 50\% bị đánh dấu kém tin cậy. Bảng~\ref{tab:e6} và Hình~\ref{fig:e11}–\ref{fig:e12} là kết quả cho ba video theo ranh giới chuẩn.
+
+\begin{table}[H]
+\centering
+\caption{Ba chỉ số 3M trên ba video (ranh giới bước từ nhãn chuẩn)}\label{tab:e6}
+\footnotesize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.159\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.115\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.115\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.088\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.097\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.106\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.159\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.159\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Video} & \textbf{Cycle time (s)} & \textbf{Chậm hơn tham chiếu (s)} & \textbf{\%VA} & \textbf{Số lần lấy} & \textbf{Chờ tay phải (s)} & \textbf{Muri tay trái} & \textbf{Muri tay phải} \\\midrule
+U001\_V001 (tham chiếu) & 77,9 & 0,0 & 82,1 & 15 & 0,0 & 21,4\% (phủ 26\%)* & 11,5\% (phủ 87\%) \\
+U001\_V002 & 84,3 & 6,4 & 85,3 & 14 & 0,0 & 17,1\% (phủ 25\%)* & 15,2\% (phủ 90\%) \\
+U002\_V001 & 123,6 & 45,7 & 73,9 & 2 & 5,2 & 40,1\% (phủ 5\%)* & 26,5\% (phủ 13\%)* \\
+Mura (3 video) & CV 0,26 & TB 95,3 · ĐLC 24,8 & — & — & — & CV bước cao nhất: & bước 11 (0,65), bước 4 (0,47) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.81\linewidth]{web_mura.png}
+\caption{Mura trên trang so sánh 3M: cycle time của ba video và CV giữa các video.}\label{fig:e11}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.84\linewidth]{web_muda.png}
+\caption{Muda trên trang so sánh 3M: biểu đồ Yamazumi (thời lượng bước cộng dồn) và bảng so sánh thao tác.}\label{fig:e12}
+\end{figure}
+
+Về Muda, U002 chậm hơn U001\_V001 45,7 giây mỗi chu kỳ, có \%VA thấp nhất (73,9\%) và là video duy nhất có thời gian chờ (5,2 giây ở tay phải). Số lần lấy của U002 (2 so với 14–15) phản ánh lỗi vùng khay ở mục~\ref{sec:e3} chứ không phải số thao tác thật. Về Mura, CV cycle time giữa ba video là 0,26 (trung bình 95,3 giây, độ lệch chuẩn 24,8 giây). Hai video của U001 chỉ chênh nhau 6,4 giây, nên CV này chủ yếu phản ánh khác biệt giữa U001 và U002, không phải dao động giữa các lần làm của một người; các bước biến động nhất là bước 11 (CV 0,65), 4 (0,47), 8 (0,35) và 6 (0,32), đều là những bước mà quy tắc so sánh liên video (R1) đánh dấu chậm bất thường ở U002. Về Muri, tay phải của U001 lệch quá 30° ở 11,5\% và 15,2\% thời gian với độ phủ 87–90\%; số liệu của U002 không dùng được vì độ phủ chỉ 5,0\% (trái) và 12,6\% (phải), cùng nguyên nhân găng tay ở mục~\ref{sec:e2}, và góc trung vị 156° của tay phải không phải giá trị hợp lý cho tư thế cổ tay. Dấu * trong Bảng~\ref{tab:e6} đánh dấu độ phủ dưới 50\%.
+
+\textbf{Ảnh hưởng của huấn luyện lên chỉ số.} Bảng~\ref{tab:e7} tính lại các chỉ số của U002 theo ba nguồn ranh giới bước.
+
+\begin{table}[H]
+\centering
+\caption{Chỉ số của U002 theo nguồn ranh giới bước}\label{tab:e7}
+\footnotesize
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.320\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.220\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.240\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.220\linewidth-2\tabcolsep\relax}@{}}
+\toprule
+\textbf{Chỉ số trên U002} & \textbf{Ground truth} & \textbf{Pred trước train (luật vùng)} & \textbf{Pred sau train (MS-TCN)} \\\midrule
+Số bước nhận ra (trên 12) & 12 & 2 & 12 \\
+Cycle time (s) & 123,6 & 102,3 & 106,1 \\
+\%VA & 73,9 & 13,4 & 92,1 \\
+Phát hiện lệch chuẩn (R8) & 7 & 2 & 7 \\
+Tổng số phát hiện & 10 & 6 & 10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Huấn luyện đưa số bước nhận ra từ 2 lên đủ 12 và số phát hiện lệch chuẩn từ 2 lên 7, bằng ground truth, dù không trùng từng bước (Bảng~\ref{tab:e4}). Cycle time của cả hai bản dự đoán ngắn hơn chuẩn vì video chỉ có hình đến 109,2 giây, còn nhãn kéo đến 123,6 giây. \%VA lệch nhiều nhất: luật vùng khay cho 13,4\% vì chỉ nhận ra bước 1 và 10; MS-TCN cho 92,1\% so với 73,9\% vì phần lớn bước 11 (không tạo giá trị) bị gán thành bước 12 (tạo giá trị), đúng lỗi ở mục~\ref{sec:e7}. Chỉ số tổng hợp theo loại bước vì vậy nhạy với từng lỗi chuyển bước, kể cả khi số phát hiện trông đúng.
+
+\textbf{Giới hạn của các chỉ số.} Chậm hơn tham chiếu hay vượt thời gian chuẩn chưa chắc là lãng phí: video chỉ cho biết U002 làm chậm hơn, không cho biết vì sao. Góc cổ tay 2D là hình chiếu trên ảnh, không đo lực, tải hay thời gian giữ tư thế, nên không đủ để kết luận quá tải cơ học. Thời gian chuẩn lấy từ tài liệu mô phỏng, và chưa có chuyên gia hay dữ liệu vận hành nào xác nhận các phát hiện. Với ba video của hai người, các chỉ số này giúp chỉ ra chỗ cần xem lại trong quy trình, nhưng chưa đủ cơ sở để tự động kết luận nguyên nhân gây lãng phí hay quá tải.
+
+\subsection{Threats to Validity}\label{sec:e10}
+
+Kết quả kiểm tra đến từ một người và một video bị cụt phần cuối; độ lệch qua seed không thay cho khác biệt giữa người. U002 được đánh giá nhiều lần khi khám phá cấu hình. Mọi lựa chọn đều qua kiểm định chéo và cấu hình chính có điểm kiểm định chéo cao nhất, nhưng cả hai biện pháp chính đều xuất phát từ video kiểm tra: ý tưởng bỏ nhóm đặc trưng đến từ phân tích đầu vào (không dùng nhãn) của U002, còn co giãn tốc độ được thêm sau khi lần thử đầu trên U002 cho thấy người này làm chậm hơn khoảng 1,5 lần, đúng bằng biên của khoảng co giãn. Kết quả của các cấu hình này vì vậy có thể lạc quan. Cấu hình chỉ thân kết hợp co giãn (F1@50 54,5 $\pm$ 16,3) chỉ được nhận ra nhờ kết quả kiểm tra, nên không được báo cáo là kết quả chính và cần xác nhận trên các người U003 trở đi với giao thức chọn mô hình theo người. Tài liệu chuẩn là tài liệu mô phỏng, mô hình ngôn ngữ có tính ngẫu nhiên và case study báo cáo một lần chạy, nên phân tích RAG là định tính. Thời gian xử lý được đo trên video đã ghi; hệ thống chưa được thử trong điều kiện thời gian thực.

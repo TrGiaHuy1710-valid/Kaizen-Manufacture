@@ -1,94 +1,81 @@
 % ===================== Tài liệu tham khảo =====================
-% Gọn: dataset, cuộc thi, link tải model/thư viện dùng trong pipeline, và 2 bài báo phương pháp dùng trực tiếp.
+% Chỉ giữ: cuộc thi DENSO Factory Hacks 2026, bộ dữ liệu HA4M, ChromaDB và tài liệu gốc của các mô hình dùng trong pipeline.
 
-% ---------- Dataset & cuộc thi ----------
-@misc{ha4m,
-  author       = {Cicirelli, Grazia and Marani, Roberto and Romeo, Laura and Dom{\'\i}nguez, Manuel Garc{\'\i}a and
-                  Heras, J{\'o}nathan and Perri, Anna G. and D'Orazio, Tiziana},
-  title        = {{HA4M}: Multi-Modal Monitoring of an Assembly Task for Human Action Recognition in Manufacturing (dataset)},
-  howpublished = {Science Data Bank. \url{https://www.scidb.cn/en/detail?dataSetId=c8d743ad2ea549dfa938cea320a38c46}},
-  note         = {Bài báo mô tả: Scientific Data, vol.~9, 745, 2022, doi:10.1038/s41597-022-01843-z},
-  year         = {2022}
-}
-
+% ---------- Cuộc thi & dữ liệu ----------
 @misc{denso,
-  author       = {{DENSO}},
-  title        = {{DENSO Factory Hacks} -- {DENSO} Hackathon Vietnam},
-  howpublished = {\url{https://densohackathon.vn/home}},
+  author       = {{DENSO Vietnam}},
+  title        = {{DENSO Factory Hacks 2026} -- {DENSO} Hackathon Vietnam},
+  howpublished = {Trang chính thức cuộc thi: \url{https://densohackathon.vn/home}},
+  note         = {Truy cập 11/2026},
   year         = {2026}
 }
 
-% ---------- Model pose ----------
-@misc{mp_pose,
-  author       = {{Google AI Edge}},
-  title        = {{MediaPipe} Pose Landmarker -- model \texttt{pose\_landmarker\_full.task}},
-  howpublished = {\url{https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task};
-                  hướng dẫn: \url{https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker}},
+@article{ha4m,
+  author  = {Cicirelli, Grazia and Marani, Roberto and Romeo, Laura and Dom{\'\i}nguez, Manuel Garc{\'\i}a and
+             Heras, J{\'o}nathan and Perri, Anna G. and D'Orazio, Tiziana},
+  title   = {The {HA4M} dataset: Multi-Modal Monitoring of an assembly task for Human Action recognition in Manufacturing},
+  journal = {Scientific Data},
+  volume  = {9},
+  pages   = {745},
+  year    = {2022},
+  doi     = {10.1038/s41597-022-01843-z},
+  note    = {Dữ liệu: \url{https://www.scidb.cn/en/detail?dataSetId=c8d743ad2ea549dfa938cea320a38c46}}
+}
+
+% ---------- Cơ sở dữ liệu vector ----------
+@misc{chroma,
+  author       = {{Chroma}},
+  title        = {Chroma -- open-source {AI} application database: Documentation},
+  howpublished = {\url{https://docs.trychroma.com/}; thư viện: \url{https://github.com/chroma-core/chroma}},
+  note         = {Truy cập 11/2026},
+  year         = {2026}
+}
+
+% ---------- Mô hình dùng trong pipeline ----------
+@inproceedings{blazepose,
+  author    = {Bazarevsky, Valentin and Grishchenko, Ivan and Raveendran, Karthik and Zhu, Tyler and Zhang, Fan and
+               Grundmann, Matthias},
+  title     = {{BlazePose}: On-device Real-time Body Pose Tracking},
+  booktitle = {CVPR Workshop on Computer Vision for Augmented and Virtual Reality},
+  year      = {2020},
+  note      = {arXiv:2006.10204}
+}
+
+@inproceedings{mphands,
+  author    = {Zhang, Fan and Bazarevsky, Valentin and Vakunov, Andrey and Tkachenka, Andrei and Sung, George and
+               Chang, Chuo-Ling and Grundmann, Matthias},
+  title     = {{MediaPipe Hands}: On-device Real-time Hand Tracking},
+  booktitle = {CVPR Workshop on Computer Vision for Augmented and Virtual Reality},
+  year      = {2020},
+  note      = {arXiv:2006.10214}
+}
+
+@inproceedings{farha2019mstcn,
+  author    = {Abu Farha, Yazan and Gall, J{\"u}rgen},
+  title     = {{MS-TCN}: Multi-Stage Temporal Convolutional Network for Action Segmentation},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {3575--3584},
+  year      = {2019}
+}
+
+@misc{e5,
+  author       = {Wang, Liang and Yang, Nan and Huang, Xiaolong and Yang, Linjun and Majumder, Rangan and Wei, Furu},
+  title        = {Multilingual {E5} Text Embeddings: A Technical Report},
+  howpublished = {arXiv:2402.05672},
   year         = {2024}
 }
 
-@misc{mp_hand,
-  author       = {{Google AI Edge}},
-  title        = {{MediaPipe} Hand Landmarker -- model \texttt{hand\_landmarker.task}},
-  howpublished = {\url{https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task};
-                  hướng dẫn: \url{https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker}},
-  year         = {2024}
-}
-
-@misc{rtmlib,
-  author       = {Jiang, Tao},
-  title        = {rtmlib: {RTMPose}/{RTMW} inference với {ONNX Runtime} (tự tải model {RTMW} wholebody 133 điểm)},
-  howpublished = {\url{https://github.com/Tau-J/rtmlib}},
-  note         = {Bài báo RTMW: arXiv:2407.08634, 2024},
-  year         = {2024}
-}
-
-@misc{rtmpose,
-  author       = {{OpenMMLab}},
-  title        = {{RTMPose} trong {MMPose}: checkpoint {RTMPose-m} (AIC + COCO, 256$\times$192) và công cụ export {MMDeploy}},
-  howpublished = {\url{https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose};
-                  checkpoint: \url{https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-aic-coco_pt-aic-coco_420e-256x192-63eb25f7_20230126.pth}},
-  note         = {Bài báo RTMPose: arXiv:2303.07399, 2023},
+@misc{gemini2023,
+  author       = {{Gemini Team, Google}},
+  title        = {Gemini: A Family of Highly Capable Multimodal Models},
+  howpublished = {arXiv:2312.11805},
   year         = {2023}
 }
 
-% ---------- Phân đoạn & tiền xử lý ----------
-@inproceedings{farha2019mstcn,
-  author    = {Farha, Yazan Abu and Gall, J{\"u}rgen},
-  title     = {{MS-TCN}: Multi-Stage Temporal Convolutional Network for Action Segmentation},
-  booktitle = {Proc. IEEE/CVF Conf. Computer Vision and Pattern Recognition (CVPR)},
-  pages     = {3575--3584},
-  year      = {2019},
-  note      = {Mã nguồn: \url{https://github.com/yabufarha/ms-tcn}}
-}
-
-@inproceedings{casiez2012oneeuro,
-  author    = {Casiez, G{\'e}ry and Roussel, Nicolas and Vogel, Daniel},
-  title     = {1\texteuro{} Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems},
-  booktitle = {Proc. SIGCHI Conf. Human Factors in Computing Systems (CHI)},
-  pages     = {2527--2530},
-  year      = {2012}
-}
-
-% ---------- LLM / RAG ----------
-@misc{e5,
-  author       = {Wang, Liang and others},
-  title        = {multilingual-e5-small (sentence embedding đa ngôn ngữ)},
-  howpublished = {Hugging Face. \url{https://huggingface.co/intfloat/multilingual-e5-small}},
-  note         = {Báo cáo kỹ thuật: arXiv:2402.05672, 2024},
-  year         = {2024}
-}
-
-@misc{chroma,
-  author       = {{Chroma}},
-  title        = {Chroma -- open-source embedding database},
-  howpublished = {\url{https://github.com/chroma-core/chroma}},
-  year         = {2024}
-}
-
-@misc{gemini,
+@misc{geminidocs,
   author       = {{Google}},
-  title        = {Gemini {API} documentation (model \texttt{gemini-2.5-flash})},
-  howpublished = {\url{https://ai.google.dev/gemini-api/docs}},
-  year         = {2025}
+  title        = {Gemini {API} -- Models ({Gemini} 3.5 {Flash-Lite})},
+  howpublished = {Tài liệu chính thức: \url{https://ai.google.dev/gemini-api/docs/models}},
+  note         = {Truy cập 11/2026},
+  year         = {2026}
 }

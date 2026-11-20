@@ -1,246 +1,202 @@
-% ============================== III. METHOD ==============================
+% Sinh từ cùng nguồn nội dung với bản Word.
 \section{Method}
-\label{sec:method}
 
-\begin{figure}[t]
-  \centering
-  \resizebox{\textwidth}{!}{\input{figures/architecture.tex}}
-  \caption{Kiến trúc tổng thể AI Kaizen Copilot. Mỗi khối 01--08 là một chương trình đọc file vào và ghi file ra
-  trong cùng một \textit{run} có manifest.
-  Tầng 2 hoàn toàn tất định (không gọi LLM hay mạng). LLM ở tầng 3 chỉ diễn giải, và mọi câu trả lời phải qua validator.
-  \code{station.yaml} còn cung cấp danh sách bước SOP và cờ VA cho khối 04--06.
-  Đường nét đứt là dữ liệu phụ: nhãn HA4M cho chế độ oracle và đánh giá, thời gian chuẩn lấy từ tài liệu qua RAG.}
-  \label{fig:arch}
+\subsection{Problem Formulation}
+
+Đầu vào gồm video RGB, định nghĩa các bước thao tác và tập tài liệu tham chiếu. Đầu ra gồm các đoạn thao tác được nhận dạng, thời lượng từng đoạn, thời gian chuẩn tương ứng và nhận xét có dẫn nguồn.
+
+Video được chuyển thành chuỗi điểm khớp, mỗi điểm có toạ độ trên ảnh và điểm tin cậy. Từ đó hệ thống xây dựng chuỗi đặc trưng $X$ gồm $T$ thời điểm, mỗi vector $x(t)$ có $D$ thành phần mô tả vị trí và chuyển động:
+
+\begin{equation} X = \big(x(1), x(2), \ldots, x(T)\big) \end{equation}
+
+Chỉ số khung hình và thời gian gốc được giữ lại để ánh xạ dự đoán về đúng vị trí trong video.
+
+Nhiệm vụ học máy là dự đoán nhãn thao tác tại từng thời điểm từ chuỗi đặc trưng. Gọi $C$ là tập lớp đầu ra và $\theta$ là tập tham số của mô hình. Nhãn dự đoán được chọn là lớp có xác suất lớn nhất:
+
+\begin{equation} c_{\text{pred}}(t) = \arg\max_{c \in C} p_\theta(c \mid X, t) \end{equation}
+
+Ở đây, $p_\theta(c \mid X, t)$ là xác suất thời điểm $t$ thuộc lớp $c$ khi xét cả chuỗi $X$. Nhãn hành động của dữ liệu vừa là tín hiệu giám sát khi huấn luyện vừa là căn cứ đối chiếu khi đánh giá.
+
+Quy trình có 12 loại thao tác, nhưng mỗi lớp đầu ra là một cặp (mã thao tác, lần lặp), cộng lớp 0 cho vùng nền hoặc “don't care”: với HA4M là 17 khoá bước và lớp nền, tổng cộng 18 lớp (mục 4.3). Cách mã hoá này cho phép đo thời gian riêng từng lần thực hiện của cùng một thao tác.
+
+Chuỗi nhãn dự đoán được chuyển thành các đoạn thao tác. Mỗi đoạn lưu mã loại thao tác, chỉ số lần lặp, thời điểm bắt đầu và thời điểm kết thúc. Gọi $b(i)$ và $e(i)$ lần lượt là thời điểm bắt đầu và kết thúc của đoạn thứ $i$, thời lượng $d(i)$ được tính bằng:
+
+\begin{equation} d(i) = e(i) - b(i) \end{equation}
+
+\subsection{Overall Architecture}
+
+Hệ thống gồm ba khối (Hình 3.1). Nhánh video chuyển khung hình thành điểm khớp, đặc trưng và chuỗi nhãn bước, rồi tính thời lượng, chỉ số và các phát hiện theo quy tắc. Nhánh tri thức đọc tài liệu, tách đoạn, mã hoá và lưu vào ChromaDB một lần; nhánh này cung cấp thời gian chuẩn, ngưỡng và các đoạn căn cứ. Khối sinh và kiểm tra tạo truy vấn cho từng phát hiện, lắp ráp prompt từ số liệu đã tính và đoạn tài liệu truy xuất, gọi mô hình ngôn ngữ và kiểm tra đầu ra trước khi đưa vào báo cáo. Mỗi khối ghi kết quả trung gian kèm cấu hình của lần chạy, cho phép truy vết một con số trong báo cáo về dữ liệu và mô hình đã tạo ra nó, và thay bộ phân đoạn (quy tắc hay MS-TCN, ranh giới dự đoán hay ranh giới chuẩn) mà không thay đổi các khối phía sau.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.00\linewidth]{fig_p1_overview.png}
+\caption{Kiến trúc tổng thể: nhánh tri thức (lập chỉ mục một lần), nhánh video (mỗi video) và khối sinh – kiểm tra (mỗi phát hiện); mũi tên đứt nét màu cam là vòng sinh lại khi diễn giải không đạt kiểm tra (tối đa một lần).}
 \end{figure}
 
-\subsection{Phát biểu bài toán}
-\label{subsec:problem}
-Đầu vào gồm ba phần:
-\begin{itemize}
-  \item video RGB $V=\{I_t\}_{t=1}^{T}$ của một trạm có một công nhân, tốc độ $f$ frame/s;
-  \item cấu hình trạm $\mathcal{S}$, gồm tập vùng (zone) đa giác $\{Z_k\}$ trên ảnh (khay linh kiện, vùng lắp)
-        và chuỗi bước SOP $\langle (j, \text{tên}_j, Z_{(j)}, \text{va}_j, \text{rep}_j)\rangle_{j=1}^{12}$;
-  \item một kho tài liệu $\mathcal{D}$ (work instruction, SOP, cơ sở tri thức Kaizen).
-\end{itemize}
-Hệ thống cần xuất ra:
-(a) phân đoạn chu kỳ thành các bước $\{(j, r, s_{j,r}, e_{j,r})\}$, với $r$ là lần lặp (ví dụ bước 2 lặp 3 lần);
-(b) tập chỉ số $\mathcal{M}$, mỗi chỉ số có giá trị, đơn vị và định nghĩa;
-(c) tập phát hiện $\mathcal{F}$, mỗi phát hiện kèm bằng chứng, ảnh hưởng (giây/chu kỳ) và độ tin cậy;
-(d) với mỗi $f\in\mathcal{F}$, một giải thích $\langle$quan sát, giả thuyết, đề xuất, ECRS, trích dẫn$\rangle$
-đã qua kiểm chứng.
-Ràng buộc then chốt: mọi số xuất hiện trong (d) phải truy ngược được về (b)--(c).
-\Cref{fig:arch} tóm tắt toàn bộ luồng xử lý.
+Các hình 3.2–3.5 mô tả chi tiết từng luồng: chuẩn bị dữ liệu và huấn luyện, kiến trúc MS-TCN, suy luận và đánh giá thời gian, và luồng RAG.
 
-\subsection{Ước lượng khung xương và làm sạch quỹ đạo cổ tay}
-\label{subsec:pose}
-Mỗi frame được đưa qua một backend pose trong vùng quan tâm (ROI) cố định của trạm.
-Các backend là MediaPipe (33 điểm thân cộng $2\times21$ điểm tay, tổng 75), RTMW (133 điểm) hoặc RTMPose fine-tune (COCO-17).
-Đầu ra là tensor $K\in\mathbb{R}^{T\times J\times 3}$ gồm $(x,y,\text{score})$.
-Với mỗi cổ tay $h\in\{\text{L},\text{R}\}$, quỹ đạo $p^h_t$ được làm sạch theo bốn bước:
-\begin{enumerate}
-  \item điểm có score $<0{,}3$ coi là thiếu (NaN);
-  \item \textit{điểm gai}, tức điểm mà vận tốc nhảy vào và nhảy ra đều vượt $v_{\max}=2500$\,px/s, bị loại;
-  \item đoạn thiếu dài $\le 15$ frame (0{,}5\,s) được nội suy tuyến tính và đánh cờ \code{interp};
-        đoạn dài hơn giữ NaN và không tính vào quãng đường;
-  \item lọc One Euro \cite{casiez2012oneeuro} trên từng đoạn liên tục.
-\end{enumerate}
-Bộ lọc One Euro thích nghi tần số cắt theo tốc độ:
-\begin{gather}
-  \hat{p}_t = \alpha_t p_t + (1-\alpha_t)\hat{p}_{t-1},\qquad
-  \alpha_t = \Big(1+\frac{f}{2\pi f_c(t)}\Big)^{-1},\nonumber\\
-  f_c(t) = f_{c,\min} + \beta\,\lvert\dot{\hat p}_t\rvert,
-  \label{eq:oneeuro}
-\end{gather}
-với $f_{c,\min}=1$\,Hz và $\beta=0{,}01$.
-Tốc độ được tính \textit{sau} khi lọc: $v^h_t = f\,\lVert \hat{p}^h_t-\hat{p}^h_{t-1}\rVert_2$ (px/s).
-Vùng của cổ tay là $z^h_t = \arg\{Z_k : \hat{p}^h_t\in Z_k\}$, theo thứ tự ưu tiên khi các đa giác chồng nhau;
-nếu cổ tay không nằm trong vùng nào thì $z^h_t=$ \code{none}.
+\subsection{Pose Estimation and Skeleton Features}
 
-\subsection{Phát hiện sự kiện}
-\label{subsec:events}
-Trạng thái mỗi tay tại frame $t$ là cặp $\sigma^h_t=(z^h_t, m^h_t)$, trong đó $m\in\{\text{moving},\text{still},\text{lost}\}$
-được xác định bằng ngưỡng $v^h_t \gtrless 120$\,px/s; \text{lost} ứng với cổ tay NaN.
-Các frame liên tiếp cùng trạng thái được nén (run-length) thành sự kiện.
-Sự kiện ngắn hơn $0{,}25$\,s được nhập vào sự kiện kề dài hơn, lặp lại cho tới khi không còn sự kiện ngắn,
-rồi gộp các sự kiện kề nhau cùng trạng thái.
-Mỗi sự kiện được gán loại theo quy tắc ở \cref{tab:events}.
-Các quy tắc này cố ý đơn giản để kỹ sư đọc hiểu và chỉnh được.
+Mỗi khung hình được đưa qua MediaPipe Pose Landmarker (33 điểm cơ thể) và Hand Landmarker (21 điểm mỗi bàn tay) trên vùng quan tâm cố định quanh bàn lắp ráp; với bàn tay, hệ thống có thể cắt vùng vuông quanh cổ tay trước khi phát hiện vì bàn tay chỉ chiếm khoảng 60 pixel trong ảnh 2048$\times$1536. Toạ độ được lưu theo chỉ số khung hình và dấu thời gian gốc. Điểm có điểm số dưới 0,3 được xem là thiếu; khoảng mất dấu ngắn (tối đa 15 khung hình) được nội suy tuyến tính, phần còn lại được điền 0 kèm mặt nạ hợp lệ. Đặc tả đặc trưng dùng 15 điểm: mũi, hai vai, hai khuỷu, hai cổ tay, hai hông và sáu điểm ngón tay (gốc ngón giữa, đầu ngón trỏ, đầu ngón cái mỗi bên), với bốn nhóm đặc trưng sau.
 
-\begin{table}[t]
+Nhóm thứ nhất là tọa độ tuyệt đối chuẩn hóa theo kích thước ảnh. Với điểm khớp thứ $j$ tại khung hình $t$, tọa độ pixel được chia lần lượt cho chiều rộng $W$ và chiều cao $H$ của ảnh:
+
+\begin{equation} a_j(t) = \left( \frac{x_j(t)}{W}, \frac{y_j(t)}{H} \right) \end{equation}
+
+Nhóm thứ hai biểu diễn vị trí tương đối theo cơ thể. Hệ thống lấy trung điểm hai vai làm tâm $q$ và khoảng cách giữa hai vai làm hệ số tỷ lệ $s$, đều được tính trên tọa độ đã chuẩn hóa theo ảnh. Tọa độ tương đối được xác định bởi:
+
+\begin{equation} r_j(t) = \frac{a_j(t) - q(t)}{s(t)} \end{equation}
+
+Nhóm thứ ba là vận tốc hai chiều, được xấp xỉ bằng sai phân giữa các vị trí tuyệt đối chuẩn hóa liên tiếp:
+
+\begin{equation} v_j(t) = f \big[ a_j(t) - a_j(t-1) \big], \quad t \geq 2 \end{equation}
+
+Trong công thức, $f$ là tốc độ khung hình được sử dụng để tính đặc trưng. Vận tốc giúp phân biệt lúc giữ tay với lúc đang thao tác; giá trị tại khung hình đầu bằng 0.
+
+Bốn nhóm được ghép theo cùng một thứ tự điểm khớp. Ký hiệu $A$, $R$ và $V$ lần lượt là các tọa độ tuyệt đối, tọa độ tương đối và vận tốc đã trải phẳng; $m$ là vector mặt nạ. Đặc trưng của một khung hình được viết như sau:
+
+\begin{equation} z(t) = \big[ A(t); R(t); V(t); m(t) \big] \in \mathbb{R}^{105} \end{equation}
+
+\begin{table}[H]
 \centering
-\caption{Quy tắc suy diễn loại sự kiện (mỗi tay)}
-\label{tab:events}
-\footnotesize
-\begin{tabularx}{\columnwidth}{@{}llX@{}}
+\caption{Thành phần của vector đặc trưng đầy đủ}
+\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.356\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.178\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.156\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.178\linewidth-2\tabcolsep\relax}>{\centering\arraybackslash}p{\dimexpr 0.133\linewidth-2\tabcolsep\relax}@{}}
 \toprule
-Vùng & Chuyển động & Loại sự kiện \\
-\midrule
-khay linh kiện & still $\le 2$\,s & \textit{pick} (lấy) \\
-khay linh kiện & still $> 2$\,s  & \textit{search} (tìm) \\
-khay linh kiện & moving           & \textit{reach} (với tay) \\
-vùng lắp       & bất kỳ           & \textit{assemble} (lắp) \\
-vùng thành phẩm & bất kỳ          & \textit{place} (đặt) \\
-\code{none}    & still $> 1{,}5$\,s & \textit{idle} (chờ) \\
-\code{none}    & still $\le 1{,}5$\,s & \textit{pause} \\
-\code{none}    & moving           & \textit{transfer} (di chuyển) \\
---             & lost             & \textit{lost} (mất dấu) \\
+\textbf{Nhóm đặc trưng} & \textbf{Số chiều mỗi điểm} & \textbf{Tổng (15 điểm)} & \textbf{Bỏ điểm ngón tay} & \textbf{Chỉ thân} \\\midrule
+Toạ độ tuyệt đối chuẩn hoá & 2 & 30 & 18 & — \\
+Toạ độ tương đối theo cơ thể & 2 & 30 & 18 & 18 \\
+Vận tốc hai chiều & 2 & 30 & 18 & 18 \\
+Mặt nạ hợp lệ & 1 & 15 & 9 & 9 \\
+Tổng cộng & 7 & 105 & 63 & 45 \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
 \end{table}
 
-\subsection{Phân đoạn bước SOP}
-\label{subsec:steps}
-Hệ thống hỗ trợ ba chế độ, đều ghi ra cùng một schema \code{step\_id, repetition, start\_s, end\_s, dur\_s, source}.
+Với $T$ khung hình, đầu ra là ma trận đặc trưng kích thước $T \times 105$. Trước khi đưa vào mô hình, các chiều được chuẩn hóa thống kê bằng trung bình và độ lệch chuẩn của tập huấn luyện:
 
-\textbf{Oracle.} Đọc nhãn HA4M theo frame. Mỗi đoạn liên tiếp cùng (action, repetition) thành một bước,
-với $e = (\text{end\_frame}+1)/f$.
+\begin{equation} \bar{z}_d(t) = \frac{z_d(t) - \mu_d}{\sigma_d} \end{equation}
 
-\textbf{Rule (baseline).} Các bước có khay riêng được neo bằng sự kiện lấy linh kiện (\cref{alg:rule}).
-Bước không neo được, hoặc có mốc sai thứ tự, được gán \code{unclassified} và ghi vào danh sách bước thiếu.
-Chế độ này không cần huấn luyện và giải thích được, nhưng không tách được những bước không có khay đặc trưng
-(như bước 9, đặt khối 2 lên khối 1).
+Trong đó, $\mu_d$ và $\sigma_d$ chỉ được ước lượng trên tập huấn luyện và giữ cố định khi xử lý tập xác thực, tập kiểm tra và dữ liệu suy luận, để thông tin từ dữ liệu đánh giá không lọt vào mô hình; chiều có độ lệch chuẩn quá nhỏ dùng hệ số chia dự phòng.
 
-\begin{algorithm}[t]
-\caption{Phân đoạn bước bằng mốc vùng (rule)}
-\label{alg:rule}
-\footnotesize
-\begin{algorithmic}[1]
-\Require Sự kiện $E$ (2 tay), chuỗi SOP $\langle (j,r,Z_{(j)})\rangle$, khoảng cách tối thiểu $\delta$
-\Ensure Mốc bắt đầu $a_{j,r}$ cho các bước neo được
-\State $t_{\text{prev}}\gets -\infty$
-\For{mỗi $(j,r)$ theo thứ tự SOP}
-  \If{$Z_{(j)}=\varnothing$} \textbf{đánh dấu} \code{no\_zone}; \textbf{continue} \EndIf
-  \State $e^\star \gets$ sự kiện \textit{pick} hoặc \textit{reach} đầu tiên tại $Z_{(j)}$ có $s(e)>t_{\text{prev}}+\delta$
-  \If{không có $e^\star$} \textbf{đánh dấu} \code{not\_found}; \textbf{continue} \EndIf
-  \State $a_{j,r}\gets$ đầu chuỗi \textit{transfer/reach} liền trước $e^\star$ (lúc tay rời vùng lắp)
-  \State $t_{\text{prev}}\gets a_{j,r}$
-\EndFor
-\State $e_{j,r}\gets$ mốc kế tiếp; bước cuối kết thúc tại sự kiện hoạt động cuối cùng
-\State Khoảng giữa các mốc không gán được bước $\to$ \code{unclassified}
-\end{algorithmic}
-\end{algorithm}
+Ngoài đặc tả đầy đủ 105 chiều, hệ thống cho phép bỏ một nhóm đặc trưng trước khi chuẩn hoá: bỏ sáu điểm ngón tay (còn 63 chiều) khi bộ phát hiện bàn tay không đáng tin cậy trên dữ liệu đích, hoặc bỏ thêm toạ độ tuyệt đối (còn 45 chiều) để mô hình chỉ dựa vào cấu hình cơ thể và vận tốc. Danh sách cột được lưu cùng mô hình nên suy luận luôn dùng đúng tập đặc trưng đã huấn luyện. Lựa chọn giữa các tập đặc trưng là một siêu tham số và được đánh giá ở Chương V.
 
-\textbf{MS-TCN (học).} Một mạng MS-TCN \cite{farha2019mstcn} gán nhãn cho từng frame dựa trên đặc trưng khung xương
-(\cref{subsec:arch}).
-Mỗi lớp là một cặp (action, repetition), cộng thêm lớp nền ``0''.
-Sau khi dự đoán, các mảnh bước ngắn hơn $0{,}5$\,s được nhập vào bước kề, trừ mảnh nền.
-Sau đó các đoạn được ánh xạ về đúng schema của chế độ rule, nên các khối 05--08 không phải thay đổi.
+Hình 3.2 tóm tắt toàn bộ luồng từ tệp dữ liệu gốc đến mô hình được kiểm tra: dữ liệu được xử lý tuần tự từng video để vừa ổ lưu trữ, chỉ chuỗi điểm khớp được giữ lại; đặc trưng và tăng cường đi vào MS-TCN; người kiểm tra không tham gia bất kỳ bước lựa chọn nào.
 
-\textbf{Đánh giá.} Khi có cả dự đoán và oracle, hệ thống ghép từng cặp bước theo $(j,r)$ và tính
-$\mathrm{IoU}_{j,r}=\frac{|[s,e]\cap[\hat s,\hat e]|}{|[s,e]\cup[\hat s,\hat e]|}$.
-Từ đó suy ra \Fone{} (bước đúng nếu IoU $\ge0{,}5$), MAE thời lượng, MAE mốc bắt đầu và kết thúc,
-và sai số cycle time.
-
-\subsection{Chỉ số Kaizen}
-\label{subsec:metrics}
-Gọi $d_{j}=\sum_r (e_{j,r}-s_{j,r})$ là thời lượng bước $j$.
-Mọi chỉ số đều được lưu kèm đơn vị và định nghĩa ngắn; khối 07 đưa nguyên văn các định nghĩa này cho LLM.
-
-\textbf{Muda.}
-\begin{align}
-  \mathrm{CT} &= e_{\text{cuối}} - s_{\text{đầu}}, \qquad
-  \%\mathrm{VA} = 100\cdot\frac{\sum_{j:\,\text{va}_j} d_j}{\mathrm{CT}}, \label{eq:ct}\\
-  L^h &= \sum_{t\in\mathcal{T}_{\text{hợp lệ}}} \lVert \hat p^h_t-\hat p^h_{t-1}\rVert_2, \label{eq:path}
-\end{align}
-trong đó $L^h$ là quãng đường cổ tay (px; đổi sang cm khi có hệ số \code{px\_per\_cm}).
-Các chỉ số Muda khác: tổng thời gian idle và transfer của từng tay, số lần lấy theo từng zone trong một chu kỳ.
-
-\textbf{Mura.} Hệ số biến thiên $\mathrm{CV}=\sigma/\mu$ của cycle time và của từng bước, tính giữa các lần lắp
-của cùng một người và giữa các người lắp; liệt kê các bước có CV cao nhất.
-
-\textbf{Muri (sàng lọc 2D).} Với khuỷu tay $\mathbf{e}$, cổ tay $\mathbf{w}$ và khớp gốc ngón giữa $\mathbf{m}$
-(cùng một tay), góc cổ tay được tính bằng
-\begin{equation}
-  \theta_t = \arccos\frac{(\mathbf{w}-\mathbf{e})\cdot(\mathbf{m}-\mathbf{w})}
-  {\lVert\mathbf{w}-\mathbf{e}\rVert\,\lVert\mathbf{m}-\mathbf{w}\rVert},\qquad
-  \Delta_t = \lvert\theta_t - \operatorname{median}(\theta)\rvert .
-  \label{eq:muri}
-\end{equation}
-Hệ thống báo phần trăm thời gian có $\Delta_t>30^\circ$, phân vị 90 của $\Delta$, và độ phủ (tỷ lệ frame đo được).
-Đây là góc chiếu 2D, so với trung vị của chính người đó; nó chỉ dùng để sàng lọc, không thay thế
-đánh giá công thái học chuyên sâu như RULA.
-
-\subsection{Phát hiện bằng quy tắc}
-\label{subsec:findings}
-Tám quy tắc ở \cref{tab:rules} chạy trên các chỉ số.
-Thêm một quy tắc chỉ cần thêm một phần tử vào danh sách \code{RULES}.
-Mỗi phát hiện ghi bằng chứng (chỉ số, giá trị, đơn vị, trial, các mốc thời gian), ảnh hưởng $I$ (giây/chu kỳ)
-và độ tin cậy $c\in\{\text{high},\text{med},\text{low}\}$.
-Mức nghiêm trọng là \textit{high} nếu $I/\mathrm{CT}\ge5\%$, \textit{med} nếu $I/\mathrm{CT}\ge2\%$, còn lại là \textit{low}.
-Danh sách phát hiện được xếp hạng theo
-\begin{equation}
-  \text{score}(f) = I(f)\cdot w(c),
-  \label{eq:rank}
-\end{equation}
-với $w(\text{high})=1$, $w(\text{med})=0{,}6$, $w(\text{low})=0{,}3$.
-Thời gian chuẩn $s^{\text{std}}_j$ và ngưỡng của R8 ưu tiên giá trị ghi trong \code{station.yaml}.
-Nếu không có, hệ thống trích từ bảng ``TG chuẩn'' của work instruction trong kho RAG,
-và mỗi giá trị đều mang trích dẫn tới trang nguồn.
-
-\begin{table}[t]
+\begin{figure}[H]
 \centering
-\caption{Các quy tắc phát hiện (V: chạy với 1 video; A: cần nhiều video)}
-\label{tab:rules}
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\columnwidth}{@{}clXc@{}}
-\toprule
-ID & Loại & Điều kiện kích hoạt & Phạm vi \\
-\midrule
-R1 & bước chậm & $d_j > \mathrm{median}+2\cdot\mathrm{MAD}$ (giữa các trial, cần $\ge3$) & A \\
-R2 & lấy dư & số pick tại zone $>$ $\sum$ rep của các bước dùng zone đó & V \\
-R3 & idle dài & tổng idle 1 tay $>3$\,s/chu kỳ & V \\
-R4 & sai thứ tự & chuỗi bước $\neq$ SOP hoặc thiếu bước & V \\
-R5 & lệch tay & 1 tay idle $>60\%$ bước khi tay kia hoạt động $>60\%$ & V \\
-R6 & biến động & CV cycle time trong 1 người $>0{,}25$ & A \\
-R7 & Muri cổ tay & \% thời gian $\Delta_t>30^\circ$ vượt ngưỡng & V \\
-R8 & lệch chuẩn & $\lvert d_j-s^{\text{std}}_j\rvert/s^{\text{std}}_j>30\%$ (từ tài liệu) & V \\
-\bottomrule
-\end{tabularx}
-\end{table}
+\includegraphics[width=1.00\linewidth]{fig_p2_data_train.png}
+\caption{Luồng chuẩn bị dữ liệu, huấn luyện và giao thức lựa chọn – đánh giá, kèm dung lượng và thời gian đo được.}
+\end{figure}
 
-\subsection{Diễn giải bằng LLM có kiểm chứng}
-\label{subsec:llm}
-\textbf{Prompt.} Prompt có version (\code{explain\_v2}) gồm: định nghĩa chỉ số, phát hiện ở dạng JSON, bảng bước kèm thời gian
-chuẩn, và ngữ cảnh tri thức.
-Ngữ cảnh tri thức có hai dạng: (a) toàn bộ KB/SOP nhỏ với các đoạn được đánh nhãn \code{[KB-xx]}, \code{[SOP-xx]};
-hoặc (b) top-$k$ chunk truy xuất từ kho RAG, mỗi chunk có \code{chunk\_id} dạng \code{DOC-xxxxxx:pN:cM}.
-LLM phải trả về JSON thuần gồm quan sát ($\le2$ câu), giả thuyết (1 câu), đề xuất ($\le2$ câu), nhãn ECRS,
-hướng dẫn đo lại, và danh sách trích dẫn.
+\subsection{Temporal Action Segmentation with MS-TCN}
 
-\textbf{Kho tài liệu.} Tài liệu (PDF, DOCX, MD, TXT) được cắt theo heading, mỗi chunk 300--600 token, chồng lấn 50 token.
-Mỗi chunk thuộc đúng một trang để trích dẫn chính xác trang; bảng được giữ thành chunk riêng.
-Chunk được nhúng bằng multilingual-E5 \cite{e5} và lưu cục bộ trong Chroma \cite{chroma}.
+Mô hình phân đoạn được lựa chọn là Multi-Stage Temporal Convolutional Network (MS-TCN)~\citep{farha2019mstcn}. Đầu vào gồm các vector đặc trưng $D$ chiều đã chuẩn hóa ($D = 105$ với đặc tả đầy đủ), được tổ chức theo chiều đặc trưng và thời gian để đưa qua các lớp tích chập một chiều. Mỗi giai đoạn bắt đầu bằng tích chập kích thước 1 để ánh xạ số kênh, tiếp theo là các khối tích chập giãn có kết nối phần dư và kết thúc bằng lớp ánh xạ sang không gian nhãn.
 
-\textbf{Validator.} Với phát hiện $f$, gọi $\mathcal{X}(f)$ là tập các giá trị số trong bằng chứng của nó
-và $\mathcal{N}(f)$ là tập số nằm trong tên trường hoặc chuỗi
-(ví dụ \code{dev\_p90\_deg}$\to$90, ``lệch $>30^\circ$''$\to$30).
-Whitelist của $f$ là
-\begin{multline}
-  \mathcal{W}(f)=\mathcal{U}\ \cup\ \mathcal{N}(f)\\ \cup \bigcup_{x\in\mathcal{X}(f)}
-  \{\mathrm{rd}_0(x), \mathrm{rd}_1(x), \mathrm{rd}_0(|x|), \mathrm{rd}_1(|x|)\},
-  \label{eq:whitelist}
-\end{multline}
-với $\mathcal{U}=\{0,1,2,3,100\}\cup\{1,\dots,12\}$ (số phổ quát và số thứ tự bước), $\mathrm{rd}_k$ là làm tròn
-$k$ chữ số thập phân.
-Một câu trả lời \textit{đạt} khi cả ba điều kiện sau thoả:
-\begin{enumerate}
-  \item mọi token số $u$ trong ba trường văn bản thoả $\mathrm{rd}_1(u)\in\mathcal{W}(f)$;
-        token dính chữ phía trước như \code{P90}, \code{U001} được bỏ qua;
-  \item mọi trích dẫn, sau khi chuẩn hoá (\code{kb13}, \code{[KB-13]} thành \code{KB-13}), tồn tại trong KB/SOP
-        hoặc trong kho RAG;
-  \item định dạng đúng: số câu nằm trong giới hạn và ECRS $\in\{E,C,R,S\}$.
-\end{enumerate}
-Nếu không đạt, hệ thống gọi lại LLM \textit{một lần}, kèm thông báo chỉ liệt kê phần sai
-(ví dụ ``số lạ: [`8.2']'', ``citation không tồn tại: [`KB-99']'').
-Kết quả lưu mọi lần thử cùng trạng thái \code{passed}, \code{failed\_after\_retry} hoặc \code{parse\_failed}.
-Pipeline không dừng khi LLM lỗi.
-Hai chỉ số được báo cáo là tỷ lệ đạt ngay lần đầu và tỷ lệ đạt sau khi hỏi lại.
+MS-TCN thực hiện dự đoán qua nhiều giai đoạn. Giai đoạn đầu nhận chuỗi đặc trưng đã chuẩn hóa $Z$ và tạo phân phối xác suất nhãn theo thời gian. Các giai đoạn sau nhận phân phối xác suất của giai đoạn trước để tiếp tục tinh chỉnh. Ký hiệu $F_s$ là ánh xạ của giai đoạn $s$, $S$ là tổng số giai đoạn và $P$ là ma trận xác suất, quá trình này được biểu diễn như sau:
 
-\subsection{Báo cáo và truy vết}
-Khối 08 sinh báo cáo Markdown gồm: tóm tắt và đề xuất ($\le6$ dòng), bảng bước kèm thời gian chuẩn, độ lệch và nguồn,
-biểu đồ Gantt và Yamazumi, 3M tổng hợp, Muri, các phát hiện kèm ảnh bằng chứng, bảng tài liệu tham chiếu
-và mục ``Giả định \& giới hạn'' tự sinh.
-Ảnh bằng chứng là frame tại thời điểm của phát hiện, có vẽ cổ tay và các zone.
-Bảng tài liệu tham chiếu được kiểm tra khớp hai chiều với mọi nhãn trích dẫn trong thân báo cáo.
-Mục ``Giả định \& giới hạn'' ghi rõ fps, đơn vị px hay cm, oracle hay dự đoán, và việc Muri chỉ là góc 2D.
+\begin{equation} P^{(1)} = \operatorname{softmax}\big(F_1(Z)\big) \end{equation}
+
+\begin{equation} P^{(s)} = \operatorname{softmax}\big(F_s(P^{(s-1)})\big), \quad 2 \leq s \leq S \end{equation}
+
+Hàm mất mát được tính tại mọi giai đoạn:
+\begin{equation} \mathcal{L} = \sum_{s=1}^{S} \Big( \mathcal{L}_{\text{CE}}^{(s)} + \lambda\, \mathcal{L}_{\text{T-MSE}}^{(s)} \Big), \qquad \mathcal{L}_{\text{T-MSE}} = \frac{1}{TC} \sum_{t,c} \min\!\Big( \big| \log p_{t,c} - \log p_{t-1,c} \big|, \tau \Big)^{2} \end{equation}
+
+Trong đó, CE là cross-entropy giữa dự đoán và nhãn chuẩn; T-MSE là bình phương chênh lệch log xác suất ở hai thời điểm liên tiếp, có chặn tại $\tau$, giúp giảm dao động nhãn trong một thao tác. Hệ số $\lambda$ cân bằng hai thành phần: làm mượt quá mạnh có thể làm mờ ranh giới giữa các thao tác. Các giá trị siêu tham số và quá trình tối ưu cụ thể được trình bày ở mục 4.4.
+
+Trong suy luận, phân phối xác suất ở giai đoạn cuối được sử dụng để chọn nhãn có xác suất lớn nhất tại mỗi thời điểm:
+
+\begin{equation} c_{\text{pred}}(t) = \arg\max_{c \in C} p^{(S)}(c \mid Z, t) \end{equation}
+
+Chuỗi nhãn được chuyển thành các đoạn liên tiếp có cùng khóa lớp. Bước hậu xử lý hỗ trợ gộp đoạn thao tác quá ngắn vào đoạn lân cận dài hơn, sau đó hợp nhất các đoạn kề nhau có cùng khóa; đoạn nền không được chọn làm đoạn ngắn để gộp. Các đoạn nền được loại khỏi bảng bước lắp ráp. Thực nghiệm dùng ngưỡng cố định 0,5 giây (Bảng 4.5); ngưỡng quá lớn có thể xoá thao tác thực sự diễn ra nhanh hoặc làm dịch ranh giới.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.00\linewidth]{fig_p3_mstcn.png}
+\caption{Kiến trúc MS-TCN: bốn giai đoạn, mỗi giai đoạn có mất mát riêng; bên dưới là khối tích chập giãn có phần dư lặp lại 10 lần trong mỗi giai đoạn.}
+\end{figure}
+
+\textbf{Tăng cường co giãn tốc độ.} Người thao tác khác nhau có nhịp khác nhau, trong khi mô hình học từ rất ít video dễ ghi nhớ nhịp của người huấn luyện. Ở mỗi epoch, mỗi chuỗi huấn luyện được lấy mẫu lại theo thời gian với hệ số s rút ngẫu nhiên theo phân phối log-đều trong [1/1,5; 1,5] (s > 1 là chậm hơn). Đặc trưng liên tục được nội suy tuyến tính, nhãn và mặt nạ lấy theo khung hình gần nhất, còn vận tốc được chia cho s trong không gian chưa chuẩn hoá để nhất quán với chuyển động chậm hơn. Biến thể theo đoạn rút một hệ số riêng cho từng đoạn nhãn liên tiếp, mô phỏng trường hợp người thao tác chậm không đều giữa các bước. Khoảng hệ số đối xứng quanh 1 theo thang log và được cố định trước khi chạy kiểm định chéo; nguồn gốc của biên 1,5 được bàn ở mục~\ref{sec:e10}.
+
+\textbf{Giải mã ràng buộc thứ tự SOP.} Trạm lắp ráp có trình tự bước cố định 1 $\rightarrow$ 2.0 $\rightarrow$ 2.1 $\rightarrow$ 2.2 $\rightarrow$ \ldots{} $\rightarrow$ 12.0, trong khi các lần lặp của cùng một thao tác gần như không khác nhau về tư thế. Thay cho chọn nhãn lớn nhất ở từng khung hình, hệ thống có thể tìm phân đoạn có tổng log-xác suất lớn nhất trong các phân đoạn tuân theo đúng trình tự đó (quy hoạch động kiểu Viterbi trên chuỗi trạng thái trái – phải), với mỗi bước dài tối thiểu 0,5 giây và đoạn nền tuỳ chọn giữa các bước. Cách giải mã này buộc các lần lặp được phân biệt bằng thứ tự, nhưng đồng thời che mất các sai lệch so với SOP như bỏ bước hoặc đảo thứ tự — vốn là thông tin có giá trị cho Kaizen — nên được xem là tuỳ chọn và đánh giá riêng.
+
+\subsection{Assembly Duration and Cycle Time}
+
+Hình 3.4 tóm tắt luồng từ nhãn khung hình đến phát hiện; các công thức chi tiết được trình bày dưới đây và ở mục 3.6.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.00\linewidth]{fig_p4_infer.png}
+\caption{Luồng suy luận và đánh giá thời gian: từ nhãn theo khung hình đến đoạn bước, số đo, chỉ số 3M và phát hiện.}
+\end{figure}
+
+Mỗi đoạn được lưu cùng mã thao tác, chỉ số lần lặp, thời điểm bắt đầu và thời điểm kết thúc. Khi quy đổi từ nhãn trên chuỗi khung hình gốc có tốc độ $F$ khung hình/giây, hệ thống sử dụng khoảng thời gian nửa kín $[b_k, e_k)$: thời điểm bắt đầu được tính từ khung hình đầu, còn thời điểm kết thúc nằm ngay sau khung hình cuối của đoạn. Với chỉ số khung hình bắt đầu từ 0:
+
+\begin{equation} b_k = \frac{n_{\text{start},k}}{F}, \qquad e_k = \frac{n_{\text{end},k} + 1}{F} \end{equation}
+
+Trong đó, $k$ là chỉ số đoạn thao tác; $n_{\text{start},k}$ và $n_{\text{end},k}$ lần lượt là chỉ số khung hình đầu và cuối cùng thuộc đoạn. Việc cộng thêm một khung hình ở mốc kết thúc bảo đảm đoạn chỉ có một khung hình vẫn có thời lượng $1/F$ giây. Thời lượng đoạn được xác định bởi:
+
+\begin{equation} d_k = e_k - b_k = \frac{n_{\text{end},k} - n_{\text{start},k} + 1}{F} \end{equation}
+
+Đối với một loại thao tác xuất hiện nhiều lần trong chu kỳ, hệ thống giữ thời lượng của từng đoạn và đồng thời tổng hợp theo mã thao tác. Gọi $K_i$ là tập các đoạn được gán cho thao tác $i$, tổng thời lượng của thao tác được tính bằng:
+
+\begin{equation} D_i = \sum_{k \in K_i} d_k \end{equation}
+
+Thời gian chu kỳ được xác định từ thời điểm bắt đầu sớm nhất đến thời điểm kết thúc muộn nhất của các đoạn thao tác hợp lệ trong cửa sổ phân tích:
+
+\begin{equation} CT = \max_{k \in K} e_k - \min_{k \in K} b_k \end{equation}
+
+Trong đó, $K$ là tập các đoạn có mã thao tác hợp lệ, không gồm lớp nền hoặc đoạn chưa phân loại. Quy tắc này loại phần nền nằm trước thao tác đầu và sau thao tác cuối khỏi cửa sổ chu kỳ, nhưng các khoảng trống nằm giữa hai mốc vẫn thuộc thời gian chu kỳ. Vì vậy, tổng thời lượng các thao tác chỉ bằng thời gian chu kỳ khi các đoạn không chồng lấn và phủ kín cửa sổ. Phần chênh lệch chưa được gán nhãn không tự động được xem là thời gian chờ hoặc lãng phí, vì còn có thể xuất phát từ sai số nhận dạng.
+
+Với video bị thiếu hình ở cuối (trường hợp U002\_V001 ở Chương V), phép đánh giá chỉ thực hiện trên phần đã quan sát: mốc cắt là đầu bước chuẩn đầu tiên bị cụt, các bước từ mốc đó bị loại khỏi tập chuẩn, các đoạn dự đoán bị cắt tại mốc và khung hình sau mốc không tính vào chỉ số theo khung hình. Cách xử lý này áp dụng như nhau cho mọi phương pháp so sánh.
+
+\subsection{RAG Pipeline Design}
+
+Hình 3.5 trình bày luồng RAG theo ba giai đoạn: lập chỉ mục tài liệu, truy xuất và sinh cho từng phát hiện, và kiểm tra đầu ra; các thành phần được mô tả lần lượt dưới đây.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.00\linewidth]{fig_p5_rag.png}
+\caption{Luồng RAG chi tiết: lập chỉ mục, truy xuất – sinh theo từng phát hiện và kiểm tra đầu ra có sinh lại.}
+\end{figure}
+
+\textbf{Biểu diễn tri thức.} Kho tri thức gồm ba loại nguồn với vai trò khác nhau: tài liệu hướng dẫn công việc của trạm (bảng trình tự 12 bước với thời gian chuẩn, điểm kiểm tra chất lượng, quy định an toàn – công thái học như ngưỡng chênh lệch 30\% và giới hạn gập cổ tay 30°); SOP mô tả từng bước; và cơ sở tri thức Kaizen tóm tắt 3M (Muda – Mura – Muri), bảy loại lãng phí, nguyên tắc tiết kiệm động tác, ECRS, Standardized Work và Yamazumi. Nguồn thứ nhất cung cấp số liệu tham chiếu; hai nguồn sau cung cấp căn cứ định tính cho giả thuyết và đề xuất. Mỗi đoạn tri thức Kaizen và SOP mang mã ngắn ([KB-xx], [SOP-xx]) để trích dẫn.
+
+\textbf{Đọc tài liệu và tách đoạn.} Tài liệu PDF, DOCX, Markdown hoặc văn bản thuần được đọc theo khối, giữ tiêu đề mục, số trang và bảng; trang PDF dạng ảnh được đánh dấu cần OCR. Bộ tách đoạn mở đoạn mới tại tiêu đề mục khi mục trước đã đủ nội dung, giữ độ dài mục tiêu 300–600 token với phần chồng lấn 50 token, tách mỗi bảng thành đoạn riêng (gộp đoạn dẫn ngắn đứng trước bảng) và lặp lại hàng tiêu đề khi bảng dài phải chia theo dòng — nhờ đó quan hệ giữa tên bước và cột thời gian chuẩn không bị cắt rời. Mỗi đoạn có mã ổn định dạng DOC-xxxxxx:pN:cM (tài liệu, trang, thứ tự) dùng làm định danh trích dẫn, kèm metadata gồm tên tài liệu, đường dẫn mục, trang và loại đoạn (văn bản hay bảng).
+
+\textbf{Mã hoá vector.} Mỗi đoạn được mã hoá bằng multilingual-e5-small~\citep{e5} thành vector 384 chiều; tên tài liệu và đường dẫn mục được ghép trước nội dung đoạn để bổ sung ngữ cảnh. Truy vấn và đoạn văn dùng cùng bộ mã hoá với tiền tố tương ứng là 'query:' và 'passage:', sau đó chuẩn hoá L2.
+
+Ký hiệu $q$ là truy vấn và $d_j$ là đoạn tài liệu thứ $j$, các vector biểu diễn được xác định như sau:
+
+\begin{equation} e_q = E_{\text{query}}(q), \qquad e_j = E_{\text{passage}}(d_j) \end{equation}
+
+Trong đó, $E_{\text{query}}$ và $E_{\text{passage}}$ biểu thị cùng bộ mã hoá với tiền tố đầu vào tương ứng; vector được chuẩn hoá L2 nên độ tương đồng cosine bằng tích vô hướng.
+
+\textbf{Lưu trữ trong ChromaDB.} Vector và metadata được lưu trong ChromaDB ở chế độ cục bộ, không cần máy chủ cơ sở dữ liệu. Mỗi bộ mã hoá có một collection riêng để không trộn hai không gian vector; chỉ mục HNSW dùng độ đo cosine. Văn bản gốc của từng đoạn được lưu song song để hiển thị trích đoạn và để bộ kiểm tra xác nhận mã trích dẫn tồn tại. Khi đổi bộ mã hoá, tài liệu được lập chỉ mục lại từ bản lưu này. Trong thực nghiệm, kho gồm 3 tài liệu với tổng cộng 8 đoạn.
+
+Độ liên quan giữa truy vấn và đoạn tài liệu được xếp hạng theo độ tương đồng cosine:
+
+\begin{equation} \operatorname{sim}(q, d_j) = \frac{e_q^{\top} e_j}{\lVert e_q \rVert \, \lVert e_j \rVert} \end{equation}
+
+\textbf{Truy xuất theo phát hiện.} Truy vấn không do người dùng nhập mà được sinh từ mỗi phát hiện: chủ đề theo loại vấn đề (ví dụ lệch thời gian chuẩn, chờ lâu, tư thế cổ tay), tên chỉ số và ngữ cảnh gồm tên bước, vùng khay và tay liên quan. Hệ thống lấy k = 4 đoạn có độ tương đồng cosine cao nhất cho mỗi phát hiện. Riêng thời gian chuẩn và ngưỡng được lấy theo quy tắc chứ không qua mô hình ngôn ngữ: với mỗi bước, hệ thống tìm các đoạn bảng liên quan, xác định cột thời gian chuẩn theo tiêu đề, khớp dòng theo tên bước đã chuẩn hoá và đọc giá trị; giá trị nhập trực tiếp trong cấu hình trạm (nếu có) được ưu tiên và ghi rõ nguồn. Không tìm thấy thì thời gian chuẩn giữ trạng thái thiếu — mô hình ngôn ngữ không được tạo giá trị thay thế.
+
+Gọi $T_i^{\text{obs}}$ là thời gian quan sát của bước $i$ và $T_i^{\text{std}}$ là thời gian chuẩn tương ứng, cùng đơn vị giây và cùng phạm vi so sánh. Độ lệch có dấu theo đơn vị giây được xác định bởi:
+
+\begin{equation} \Delta T_i = T_i^{\text{obs}} - T_i^{\text{std}} \end{equation}
+
+Để so sánh các bước có thời lượng khác nhau, hệ thống dùng độ lệch tương đối (\%):
+
+\begin{equation} \delta_i = 100 \times \frac{\Delta T_i}{T_i^{\text{std}}}, \qquad T_i^{\text{std}} > 0 \end{equation}
+
+Quy tắc R8 của hệ thống ghi nhận trường hợp có trị tuyệt đối của độ lệch vượt ngưỡng $\tau$. Ngưỡng được lấy từ tài liệu khi tìm được theo quy tắc trích xuất; nếu sử dụng ngưỡng cấu hình hoặc mặc định hệ thống, nguồn này phải được ghi rõ. Trường hợp nằm trong ngưỡng chỉ được diễn giải là chưa vượt ngưỡng chênh lệch thời gian đang xét, không đồng nghĩa thao tác đã đúng về kỹ thuật hoặc đạt hiệu quả tối ưu.
+
+Đối với bước chậm hơn chuẩn, hệ thống sử dụng phần chênh lệch dương làm một đại lượng hỗ trợ xếp thứ tự ưu tiên xem xét:
+
+\begin{equation} I_i = \max(\Delta T_i, 0) \end{equation}
+
+Đại lượng $I_i$ có đơn vị giây trên chu kỳ theo phạm vi đã xác định. Đây là phần thời gian vượt chuẩn quan sát được, chưa phải lượng thời gian chắc chắn có thể tiết kiệm. Danh sách phát hiện còn được xếp hạng bằng trọng số mức tin cậy do hệ thống quy định; các trọng số này là quy tắc ưu tiên, không phải xác suất đã được hiệu chỉnh bằng thực nghiệm.
+
+\textbf{Kết hợp đầu ra nhận dạng với ngữ cảnh truy xuất.} Mỗi phát hiện là một bản ghi có cấu trúc gồm loại vấn đề, mã và tên bước, thời lượng quan sát, thời gian chuẩn, độ lệch, ngưỡng, nguồn chuẩn, khoảng thời gian trong video và mức ưu tiên. Prompt gửi mô hình ngôn ngữ ghép ba phần: (i) danh sách phát hiện với số liệu đã tính; (ii) bảng ngữ cảnh rút gọn các bước của video (mã, thời lượng, chuẩn, độ lệch) để mô hình hiểu vị trí của bước trong chu kỳ; (iii) các đoạn tài liệu truy xuất, mỗi đoạn đánh dấu bằng mã trích dẫn. Yêu cầu sinh là một bản ghi JSON cho mỗi phát hiện với các trường quan sát (tối đa hai câu), giả thuyết nguyên nhân (một câu, diễn đạt như giả thuyết), đề xuất cải tiến (tối đa hai câu), nhóm ECRS (Eliminate, Combine, Rearrange, Simplify), cách đo lại và danh sách trích dẫn. Prompt cấm tính thêm hoặc tạo số mới.
+
+\textbf{Kiểm tra đầu ra và sinh lại.} Mỗi bản ghi được kiểm tra ba mặt: định dạng (đủ trường, giới hạn số câu, nhóm ECRS hợp lệ); số liệu (mọi số trong quan sát, giả thuyết và đề xuất phải thuộc tập số cho phép của phát hiện và ngữ cảnh, kể cả các dạng làm tròn); và trích dẫn (mã đoạn phải tồn tại trong kho hoặc là mã tri thức tĩnh hợp lệ). Bản ghi chưa đạt được gửi lại kèm thông báo lỗi cụ thể để mô hình sửa một lần; trạng thái cuối (đạt, đạt sau sửa, không đạt, không đọc được) được lưu cùng lịch sử và hiển thị trong báo cáo. Bộ kiểm tra xác nhận số liệu không bị bịa và nguồn tồn tại, nhưng chưa xác nhận đoạn được dẫn thực sự hỗ trợ từng nhận định — phần này được đánh giá định tính ở mục~\ref{sec:e8}.

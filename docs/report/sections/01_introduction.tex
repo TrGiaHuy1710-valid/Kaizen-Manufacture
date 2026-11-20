@@ -1,52 +1,24 @@
-% ============================== 1. INTRODUCTION ==============================
+% Sinh từ cùng nguồn nội dung với bản Word.
 \section{Introduction}
-\label{sec:intro}
 
-Trong sản xuất tinh gọn, Kaizen là quá trình cải tiến liên tục dựa trên quan sát hiện trường.
-Kỹ sư công nghiệp (IE) nhận diện ba nhóm tổn thất: \muda{} (lãng phí, như chờ đợi, di chuyển thừa, lấy thừa),
-\mura{} (biến động giữa các chu kỳ hoặc giữa các công nhân) và \muri{} (quá tải thể chất, như tư thế cổ tay bất lợi).
-Công cụ truyền thống là nghiên cứu thao tác và thời gian (motion and time study): kỹ sư đứng tại trạm, bấm giờ từng bước,
-ghi chép rồi vẽ biểu đồ Yamazumi bằng tay.
-Cách làm này tốn 2--4 giờ cho mỗi trạm, kết quả phụ thuộc người đo, và chỉ lấy được vài chu kỳ nên bỏ sót biến động.
-Hệ quả là bí quyết của người thợ giỏi (thứ tự động tác, nhịp, phối hợp hai tay) vẫn là tri thức ngầm,
-và dễ mất đi khi người đó nghỉ việc.
+\subsection{Background and Motivation}
 
-Thị giác máy tính có thể đo các đại lượng này liên tục và rẻ hơn.
-Ước lượng khung xương 2D thời gian thực đã chạy được trên CPU \cite{mp_pose,rtmpose}.
-Các mạng phân đoạn hành động theo thời gian như MS-TCN \cite{farha2019mstcn} tách được chuỗi thao tác dài thành từng bước.
-Mô hình ngôn ngữ lớn (LLM) có thể diễn giải kết quả bằng ngôn ngữ của kỹ sư.
-Tuy vậy, có hai trở ngại thực tế khi ghép các khối này lại.
-Thứ nhất, LLM có xu hướng \textit{bịa} số liệu hoặc nguồn trích dẫn (hallucination).
-Điều này không chấp nhận được khi con số dẫn tới quyết định thay đổi quy trình.
-Thứ hai, sai số của phần thị giác lan sang mọi chỉ số phía sau, nên cần đo được sai số đó và tách bạch nó với phần phân tích.
+Trong lắp ráp, tổng thời gian hoàn thành một chu kỳ phản ánh năng suất chung nhưng không cho biết thời gian được phân bổ thế nào giữa các bước như lấy linh kiện, định vị, lắp ghép hay dùng dụng cụ. Muốn biết vì sao một chu kỳ kéo dài, cần nhận ra từng thao tác, mốc bắt đầu, kết thúc của nó và các khoảng chờ hay thao tác lặp.
 
-Báo cáo này trình bày \textit{AI Kaizen Copilot}, đề tài của nhóm trong môn Học máy nâng cao, đồng thời là bài dự thi
-DENSO Factory Hacks 2026 \cite{denso}. Hệ thống là một pipeline phân tích thao tác lắp ráp từ video, được xây dựng
-quanh bốn nguyên tắc:
-\begin{enumerate}
-  \item \textbf{Mọi con số do code tính.} LLM chỉ được giải thích. Một bộ kiểm chứng (validator) bằng code bác bỏ
-        mọi câu trả lời chứa số liệu ngoài whitelist của phát hiện hoặc trích dẫn không có thật.
-  \item \textbf{Mỗi bước là một chương trình đọc file vào, ghi file ra}, chạy lại độc lập được, và lưu toàn bộ cấu hình,
-        phiên bản code, lệnh gốc của mỗi lần chạy để truy vết.
-  \item \textbf{Chế độ \textit{oracle}.} Có thể thay phần phân đoạn tự động bằng nhãn chuyên gia.
-        Như vậy nửa sau của pipeline (chỉ số, phát hiện, LLM, báo cáo) được phát triển và đánh giá độc lập với sai số thị giác.
-        Chênh lệch giữa oracle và dự đoán chính là sai số của phần thị giác.
-  \item \textbf{Đơn giản trước, học sâu sau.} Đường mặc định chỉ dùng model pretrained, quy tắc và thống kê.
-        Phần huấn luyện (MS-TCN, fine-tune RTMPose) là tuỳ chọn và có baseline để so sánh.
-\end{enumerate}
+Hiện nay việc này thường làm bằng cách quan sát hoặc xem lại video, bấm giờ và ghi chép. Cách làm tốn thời gian khi số video tăng, và mỗi người đánh giá có thể chọn mốc bắt đầu, kết thúc khác nhau nên số liệu kém nhất quán. Một công cụ tự động nhận dạng và đo thời gian từng bước giúp giảm việc thủ công và tạo cơ sở so sánh thống nhất.
 
-\noindent Đóng góp chính của đề tài gồm:
-\begin{itemize}
-  \item Một pipeline đầu--cuối, mô-đun hoá, từ video tới chỉ số \muda/\mura/\muri{} có đơn vị và định nghĩa,
-        rồi tới phát hiện xếp hạng theo ảnh hưởng (giây/chu kỳ) và báo cáo có bằng chứng hình ảnh (\cref{sec:method}).
-  \item Một tầng diễn giải LLM \textit{có kiểm chứng}: whitelist số liệu theo từng phát hiện, trích dẫn tĩnh (KB/SOP)
-        hoặc động (chunk\_id của tài liệu RAG), hỏi lại có phản hồi lỗi, và báo cáo tỷ lệ đạt (\cref{subsec:llm}).
-  \item Một bộ phân đoạn bước học từ khung xương (MS-TCN trên đặc trưng 105 chiều) với phép chia dữ liệu theo người lắp,
-        cùng quy trình fine-tune RTMPose dùng skeleton Azure Kinect làm nhãn giả (\cref{sec:impl}).
-  \item Đánh giá trên HA4M \cite{ha4m}: độ chính xác pose so với Kinect, phân đoạn bước so với nhãn,
-        tỷ lệ đạt kiểm chứng của LLM, và một nghiên cứu tình huống phát hiện Kaizen (\cref{sec:exp}).
-\end{itemize}
+Ước lượng tư thế người cho phép biểu diễn chuyển động bằng chuỗi điểm khớp, từ đó mô hình học có thể nhận dạng thao tác và ranh giới thời gian của chúng. Tuy nhiên, nhận dạng thao tác lắp ráp có những khó khăn riêng: nhiều bước có động tác gần giống nhau nhưng khác linh kiện, một số thao tác lặp lại liên tiếp trong cùng chu kỳ, và bàn tay thường bị che khuất. Sau khi đo được thời gian, kết quả còn cần được đặt trong ngữ cảnh của quy trình chuẩn — vốn nằm trong tài liệu hướng dẫn công việc và SOP — để người phụ trách biết bước nào lệch chuẩn và nên cải tiến theo hướng nào. Dự án vì vậy kết hợp phân đoạn hành động từ chuỗi khung xương với truy xuất tăng cường sinh (RAG) để tạo báo cáo có căn cứ và truy vết được, phục vụ hoạt động Kaizen.
 
-Phần còn lại của báo cáo: \cref{sec:related} tổng quan các hướng liên quan, \cref{sec:method} trình bày phương pháp,
-\cref{sec:impl} mô tả hiện thực, model, dữ liệu và huấn luyện, \cref{sec:exp} báo cáo thực nghiệm và
-\cref{sec:conclusion} kết luận.
+\subsection{Problem Statement}
+
+Đầu vào của hệ thống là video RGB ghi một chu kỳ lắp ráp bộ bánh răng hành tinh tại một trạm cố định, định nghĩa 12 bước thao tác và tập tài liệu tham chiếu. Nhiệm vụ thứ nhất là học có giám sát: dự đoán nhãn bước và lần lặp tại từng khung hình từ chuỗi điểm khớp, rồi chuyển thành các đoạn có mốc bắt đầu, kết thúc. Nhiệm vụ thứ hai là đánh giá: tính thời lượng từng bước, đối chiếu với thời gian chuẩn truy xuất từ tài liệu, phát hiện các bước lệch ngưỡng và sinh khuyến nghị cải tiến có trích dẫn. Mọi phép tính thời gian và chênh lệch do chương trình thực hiện; mô hình ngôn ngữ chỉ diễn giải các số liệu đã tính và đoạn tài liệu đã truy xuất.
+
+Câu hỏi nghiên cứu trọng tâm là: (i) mô hình phân đoạn học từ khung xương 2D có khái quát sang người thực hiện chưa xuất hiện khi huấn luyện hay không, và những yếu tố nào của dữ liệu giới hạn khả năng đó; (ii) sai số phân đoạn ảnh hưởng thế nào đến các phát hiện và khuyến nghị mà tầng RAG tạo ra.
+
+\subsection{Objectives and Scope}
+
+Mục tiêu là xây dựng và đánh giá thực nghiệm một luồng xử lý thống nhất từ video đến báo cáo khuyến nghị, gồm: trích xuất điểm khớp, phân đoạn bước bằng MS-TCN, đo thời lượng, truy xuất tài liệu chuẩn và sinh diễn giải có kiểm tra. Dự án được phát triển cho cuộc thi DENSO Factory Hacks 2026~\citep{denso}. Phạm vi dữ liệu là nhiệm vụ lắp ráp bộ bánh răng hành tinh của bộ dữ liệu HA4M~\citep{ha4m} với một góc camera cố định; tại thời điểm thực nghiệm, nhóm có ba video có nhãn của hai người (hai video của U001 và một video của U002), nên kết quả được trình bày như một nghiên cứu thí điểm, với người huấn luyện và người kiểm tra tách riêng. Thời gian chuẩn lấy từ tài liệu hướng dẫn công việc do nhóm biên soạn mô phỏng, dùng để kiểm chứng chức năng đối chiếu chứ không đại diện cho định mức của nhà máy.
+
+\subsection{Contributions}
+
+Đóng góp của đề tài mang tính thực nghiệm: (1) một luồng xử lý hoàn chỉnh, có lưu vết từ khung hình đến khuyến nghị; (2) một giao thức đánh giá tách người khi số người rất ít — kiểm định chéo theo video trên người huấn luyện để chọn siêu tham số, kiểm tra trên người mới, 5 seed cho mỗi cấu hình — cùng so sánh với kết quả kiểm tra trong cùng người; (3) phân tích nguyên nhân suy giảm khái quát (găng tay làm hỏng điểm bàn tay, khác biệt tốc độ thao tác) và các biện pháp tương ứng — loại nhóm đặc trưng kém tin cậy, tăng cường co giãn tốc độ, giải mã ràng buộc thứ tự SOP — được đo bằng nghiên cứu loại bỏ thành phần; (4) thiết kế và phân tích định tính tầng RAG, gồm cơ chế kiểm tra đầu ra và đối chiếu phát hiện giữa ranh giới dự đoán và ranh giới chuẩn.

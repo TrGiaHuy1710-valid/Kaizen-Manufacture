@@ -1,14 +1,9 @@
-% ============================== ABSTRACT ==============================
- 
-\begin{abstract}
-Trong sản xuất, đo thời gian thao tác thủ công thường mất 2--4 giờ mỗi trạm và chỉ ghi nhận được một số chu kỳ, khiến việc theo dõi liên tục lãng phí (\muda), biến động (\mura) và quá tải (\muri) gặp nhiều hạn chế.
+% Sinh từ cùng nguồn nội dung với bản Word.
+\section*{Tóm tắt}
+\addcontentsline{toc}{section}{Tóm tắt}
 
-Chúng tôi đề xuất \textit{AI Kaizen Copilot}, hệ thống chuyển video RGB tại trạm lắp ráp thành các chỉ số Kaizen và đề xuất cải tiến có trích dẫn nguồn. Pipeline gồm ba tầng: (i) \textit{Skeleton} sử dụng MediaPipe, RTMW hoặc RTMPose để ước lượng và xử lý quỹ đạo khung xương 2D, từ đó nhận diện các sự kiện thao tác; (ii) \textit{Analyzer} phân đoạn chu kỳ thành 12 bước SOP bằng luật hoặc MS-TCN, tính toán cycle time, \%VA, quãng đường tay và độ biến thiên, đồng thời áp dụng tám quy tắc (R1--R8) để phát hiện và xếp hạng vấn đề; (iii) \textit{LLM} kết hợp RAG để diễn giải kết quả và trích dẫn hướng dẫn công việc. Đầu ra được kiểm chứng bằng code nhằm đảm bảo tính nhất quán của số liệu và nguồn tham chiếu.
+AI Kaizen Copilot – Motion Analyzer nhận dạng các bước lắp ráp từ video RGB và đối chiếu thời gian thực hiện với tài liệu chuẩn; hệ thống được phát triển cho cuộc thi DENSO Factory Hacks 2026~\citep{denso}. MediaPipe trích điểm khớp, MS-TCN gán nhãn bước và lần lặp cho từng khung hình (17 khoá bước và một lớp nền), từ đó hệ thống tính thời lượng bước, thời gian chu kỳ và ba chỉ số Muda, Mura, Muri. Tầng RAG lưu hướng dẫn công việc, SOP và tri thức Kaizen trong ChromaDB, truy xuất căn cứ cho từng phát hiện để mô hình ngôn ngữ viết khuyến nghị có trích dẫn; bộ kiểm tra chặn số liệu và mã trích dẫn không có nguồn. Hệ thống xử lý video đã ghi, chưa chạy theo thời gian thực.
 
-Thử nghiệm trên HA4M (lắp ráp bộ bánh răng hành tinh, Azure Kinect, 30 fps) cho thấy baseline luật đạt F1 lần lượt 0,75 và 0,714 trong nhận diện sự kiện và phân đoạn bước SOP; MAE thời lượng bước đạt 0,62--0,92 s, sai số cycle time đạt 0,6--2,27 s. Gemini 2.5 Flash đạt tỷ lệ kiểm chứng 100\% sau tối đa một lần hỏi lại. Hệ thống phát hiện bước 9 và 12 chậm hơn chuẩn lần lượt 76,1\% và 34,3\% trong chu kỳ lắp ráp thứ hai. Kết quả MS-TCN sẽ được trình bày tại \cref{sec:exp}.
-\end{abstract}
+Thực nghiệm dùng bộ dữ liệu HA4M~\citep{ha4m}: huấn luyện và chọn cấu hình bằng kiểm định chéo trên người U001, kiểm tra một lần trên người U002, mỗi cấu hình 5 seed. U002 đeo găng tay nên điểm ngón tay phải chỉ được phát hiện ở 13\% khung hình (U001: 89\%), và thao tác chậm hơn khoảng 1,5 lần. Cấu hình được chọn — bỏ điểm ngón tay, co giãn tốc độ — đạt F1@50 79,1 khi kiểm định chéo trong U001 nhưng chỉ 34,3 trên U002 (Acc 44,5\%), so với 17,6 và 33,3\% khi dùng đủ đặc trưng; luật vùng khay chỉ nhận ra 2 trên 16 bước. Cấu hình chỉ dùng đặc trưng thân đạt F1@50 54,5 $\pm$ 16,3 trên U002 nhưng không được kiểm định chéo chọn. Ở tầng RAG, 10/10 diễn giải qua bộ kiểm tra định dạng, số liệu và mã trích dẫn, nhưng bộ kiểm tra không xét nội dung: 3 trong 7 phát hiện lệch thời gian chuẩn không khớp với kết quả khi dùng ranh giới chuẩn, và \%VA của U002 bị đo thành 92,1\% thay vì 73,9\%.
 
-\begin{IEEEkeywords}
-Kaizen, Muda--Mura--Muri, ước lượng khung xương, phân đoạn hành động theo thời gian, MS-TCN, HA4M,
-mô hình ngôn ngữ lớn, truy xuất tăng cường (RAG), kiểm chứng đầu ra LLM.
-\end{IEEEkeywords}
+Hướng tiếp cận có giá trị thực tế: hệ thống chạy trọn từ video đến khuyến nghị có trích dẫn, và trên người mới mô hình học vượt luật thủ công. Giới hạn lớn nhất là dữ liệu quá nặng so với điều kiện của nhóm: mỗi video HA4M nén khoảng 12 GB (giải nén đủ khoảng 17 GB), cả bộ 217 video khoảng 2,6 TB, trong khi ổ lưu trữ dùng chung chỉ còn 16–32 GB trống; riêng bước trích điểm khớp mất 6–7 phút mỗi video trên CPU, khoảng 23 giờ cho cả bộ. Nhóm vì vậy mới xử lý được 3 video của 2 người, khoảng 1,4\% bộ dữ liệu, nên các kết quả trên chưa đủ để kết luận về công nhân nói chung.

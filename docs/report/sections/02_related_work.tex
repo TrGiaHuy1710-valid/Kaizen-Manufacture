@@ -1,62 +1,14 @@
-% ============================== 2. OVERVIEW — RELATED WORK ==============================
-\section{Overview -- Related Work}
-\label{sec:related}
+% Sinh từ cùng nguồn nội dung với bản Word.
+\section{Overview and Related Work}
 
-\subsection{Kaizen và nghiên cứu thao tác -- thời gian}
-Hệ thống sản xuất Toyota định nghĩa ba nhóm tổn thất \muda, \mura, \muri{} và đặt cải tiến liên tục (Kaizen) làm trung tâm.
-Nghiên cứu thao tác của Barnes đưa ra các nguyên tắc tiết kiệm động tác: dùng hai tay đồng thời, giảm quãng đường với tay,
-đặt dụng cụ cố định.
-Khung ECRS (\textit{Eliminate, Combine, Rearrange, Simplify}) là cách phân loại đề xuất cải tiến được dùng rộng rãi.
-Về \muri, các phương pháp đánh giá công thái học như RULA chấm điểm tư thế chi trên theo góc khớp, trong đó có góc gập cổ tay.
-Các công cụ này đều giả định có người quan sát trực tiếp. Hệ thống của nhóm tự động hoá phần đo,
-còn phần phán đoán và phê duyệt vẫn để cho kỹ sư IE.
+\subsection{Pose Estimation for Assembly Video}
 
-\subsection{Ước lượng khung xương 2D}
-MediaPipe cung cấp Pose Landmarker (33 điểm thân) \cite{mp_pose} và Hand Landmarker (21 điểm mỗi bàn tay) \cite{mp_hand},
-chạy thời gian thực trên CPU.
-RTMPose \cite{rtmpose} dùng đầu ra SimCC, đạt độ chính xác cao trên COCO với chi phí thấp.
-RTMW \cite{rtmlib} mở rộng lên 133 điểm toàn thân, có cả bàn tay.
-Với trạm lắp ráp ngồi tại bàn, gần như toàn bộ thông tin nằm ở bàn tay, nên model chỉ có 17 điểm thân là không đủ
-cho các chỉ số \muri{} cổ tay.
-Cảm biến độ sâu như Azure Kinect cho skeleton 32 khớp, nhưng skeleton này vẫn là ước lượng.
-Nhóm dùng nó để đối chứng và làm nhãn giả, không coi là ground truth.
+Ước lượng tư thế người xác định toạ độ các điểm khớp trong ảnh. BlazePose~\citep{blazepose} là mô hình nhẹ dự đoán 33 điểm cơ thể, kết hợp giám sát bằng bản đồ nhiệt khi huấn luyện với hồi quy toạ độ khi suy luận; đây là mô hình nền của bộ Pose Landmarker trong MediaPipe được dùng trong hệ thống. MediaPipe Hands~\citep{mphands} phát hiện lòng bàn tay rồi hồi quy 21 điểm trên mỗi bàn tay. Cả hai được huấn luyện trên ảnh người với bàn tay trần và tư thế thông thường, nên chất lượng điểm khớp trong môi trường lắp ráp — bàn tay nhỏ trong ảnh, bị linh kiện che, hoặc đeo găng — cần được đo trực tiếp thay vì giả định. Ở Chương V, chất lượng điểm bàn tay là một trong những nguyên nhân chính làm mô hình phía sau kém khi chuyển sang người mới.
 
-\subsection{Phân đoạn hành động theo thời gian}
-Phân đoạn hành động gán nhãn cho từng frame của một video dài chưa cắt.
-MS-TCN \cite{farha2019mstcn} dùng nhiều stage tích chập giãn (dilated) để có trường tiếp nhận dài,
-kèm hàm mất mát làm mượt nhằm giảm phân mảnh. Các chỉ số chuẩn gồm độ chính xác frame, Edit score và F1@\{10,25,50\}.
-Trên dữ liệu khung xương, các mạng đồ thị như ST-GCN mô hình hoá quan hệ không gian giữa các khớp.
-Nhóm chọn MS-TCN trên đặc trưng khung xương vì model nhẹ, train được trên CPU và phù hợp với chuỗi dài
-($\sim$2500 frame mỗi chu kỳ).
+\subsection{Temporal Action Segmentation}
 
-\subsection{Dữ liệu lắp ráp trong sản xuất}
-HA4M \cite{ha4m} ghi lại 41 người lắp bộ bánh răng hành tinh (Epicyclic Gear Train) bằng Azure Kinect,
-có RGB, độ sâu, hồng ngoại, point cloud, skeleton và nhãn hành động theo frame.
-So với các bộ dữ liệu lắp ráp gia dụng hoặc đồ chơi, HA4M gần với một trạm lắp ráp công nghiệp thật hơn:
-một người, một bàn, khay linh kiện cố định, quy trình 12 bước. Đây là dữ liệu chính của đề tài.
+Phân đoạn hành động theo thời gian gán nhãn cho mọi khung hình của một video dài chứa nhiều hành động nối tiếp. MS-TCN~\citep{farha2019mstcn} xếp chồng nhiều giai đoạn tích chập một chiều có hệ số giãn tăng gấp đôi; giai đoạn đầu nhận đặc trưng khung hình, các giai đoạn sau tinh chỉnh phân bố xác suất của giai đoạn trước. Hàm mất mát kết hợp cross-entropy với thành phần làm mượt T-MSE nhằm giảm hiện tượng phân mảnh. Kiến trúc này phù hợp với bài toán vì vùng tiếp nhận đủ bao trùm cả chu kỳ lắp ráp, số tham số nhỏ (dưới 0,7 triệu) và có thể huấn luyện với rất ít video. Các hướng khác như mạng tích chập đồ thị trên khung xương hay kiến trúc Transformer cho phân đoạn thường có nhiều tham số hơn; với ba video có nhãn, nhóm không thử các hướng này.
 
-\subsection{LLM, truy xuất tăng cường và kiểm chứng đầu ra}
-Truy xuất tăng cường (RAG) giảm việc LLM bịa thông tin bằng cách đưa tài liệu liên quan vào ngữ cảnh.
-Mô hình nhúng đa ngôn ngữ E5 \cite{e5} cùng kho vector Chroma \cite{chroma} cho phép truy xuất tài liệu tiếng Việt chạy cục bộ.
-Tuy vậy, kể cả khi có ngữ cảnh, đầu ra của LLM vẫn có thể chứa sự kiện không có trong nguồn.
-Khác với các hệ hỏi đáp chung, ở bài toán này mọi con số đều đã được code tính trước.
-Vì vậy nhóm \textit{kiểm chứng đầu ra bằng code} (whitelist số liệu và tập trích dẫn hợp lệ) thay vì tin vào chỉ dẫn
-trong prompt.
-\Cref{tab:related} tóm tắt vị trí của hệ thống so với các hướng liên quan.
+\subsection{Retrieval-Augmented Generation and Vector Stores}
 
-\begin{table}[H]
-\centering
-\caption{So sánh hướng tiếp cận}
-\label{tab:related}
-\small
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-Hướng & Đo tự động & Chỉ số 3M & Giải thích & Kiểm chứng số \\
-\midrule
-Bấm giờ thủ công & -- & \checkmark & \checkmark{} (người) & -- \\
-Phân đoạn hành động \cite{farha2019mstcn} & \checkmark & -- & -- & -- \\
-LLM + RAG & -- & -- & \checkmark & -- \\
-\textbf{AI Kaizen Copilot} & \checkmark & \checkmark & \checkmark & \checkmark \\
-\bottomrule
-\end{tabular}
-\end{table}
+RAG bổ sung tri thức ngoài cho mô hình ngôn ngữ bằng cách truy xuất các đoạn tài liệu liên quan và đưa vào ngữ cảnh sinh. Chất lượng truy xuất phụ thuộc vào bộ mã hoá văn bản: multilingual-E5~\citep{e5} là họ mô hình mã hoá đa ngôn ngữ huấn luyện tương phản, phân biệt truy vấn và đoạn văn bằng tiền tố, phù hợp với tài liệu tiếng Việt. Các vector được lưu và tìm kiếm lân cận gần đúng trong ChromaDB~\citep{chroma}, một cơ sở dữ liệu vector nhúng chạy cục bộ, lưu kèm metadata để truy vết nguồn. Ở thành phần sinh, hệ thống dùng mô hình Gemini~\citep{gemini2023,geminidocs} qua API, không tinh chỉnh. Khác với các ứng dụng hỏi đáp, ở đây đầu vào của RAG là các phát hiện định lượng do chương trình tính, nên yêu cầu then chốt là mô hình ngôn ngữ không được tạo số liệu mới và mọi nhận định phải dẫn được về đoạn tài liệu.

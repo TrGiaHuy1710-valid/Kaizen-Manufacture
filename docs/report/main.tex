@@ -1,19 +1,20 @@
 % =====================================================================
-%  AI Kaizen Copilot — Motion Analyzer · Báo cáo môn Học máy nâng cao (1 cột)
+%  Báo cáo môn Học máy nâng cao — Nhận dạng bước lắp ráp từ dữ liệu khung xương và ứng dụng RAG
 %  Biên dịch:  cd docs/report && latexmk        (XeLaTeX, xem latexmkrc) → build/main.pdf
-%  Ảnh: figures/*.png · Sơ đồ TikZ: figures/*.tex · Tài liệu tham khảo: references.bib
-%  Ô cần bổ sung đánh dấu \todo{...} (chữ đỏ) và \tbd (dấu ? đỏ trong bảng).
+%  Ảnh: figures/ · Tài liệu tham khảo: references.bib (trích dẫn tác giả–năm, natbib)
+%  Nội dung các mục (sections/*.tex) được sinh từ cùng nguồn với bản Word docs/HOC_MAY_NANG_CAO.docx.
 % =====================================================================
 \documentclass[12pt,a4paper]{article}
 
-% ---------- Thông tin bìa (sửa ở đây) ----------
-\newcommand{\truong}{TRƯỜNG ĐẠI HỌC PHENIKAA}
-\newcommand{\khoa}{}                               % vd: KHOA CÔNG NGHỆ THÔNG TIN — để trống thì không in
-\newcommand{\monhoc}{HỌC MÁY NÂNG CAO}
-\newcommand{\mamonhoc}{\todo{bổ sung}}
-\newcommand{\giangvien}{PGS.TS Phạm Tiến Lâm}
-\newcommand{\detai}{AI Kaizen Copilot: Định lượng Muda--Mura--Muri\\ từ video lắp ráp với giải thích LLM có kiểm chứng}
-\newcommand{\noithoigian}{Hà Nội, tháng 11 năm 2026}
+% ---------- Thông tin bìa ----------
+\newcommand{\daihoc}{ĐẠI HỌC PHENIKAA}
+\newcommand{\truong}{TRƯỜNG CÔNG NGHỆ THÔNG TIN PHENIKAA}
+\newcommand{\monhoc}{BÁO CÁO HỌC MÁY NÂNG CAO}
+\newcommand{\detai}{Nhận dạng bước lắp ráp từ dữ liệu khung xương\\ và ứng dụng RAG trong đánh giá thời gian thực hiện}
+\newcommand{\nganh}{Khoa học dữ liệu và trí tuệ nhân tạo}
+\newcommand{\lop}{Học máy nâng cao (N01)}
+\newcommand{\giangvien}{PGS.TS. Phạm Tiến Lâm}
+\newcommand{\noithoigian}{Hà Nội -- Năm 2026}
 
 % ---------- Trang + font + tiếng Việt (XeLaTeX) ----------
 \usepackage[a4paper,left=3cm,right=2cm,top=2.5cm,bottom=2.5cm]{geometry}
@@ -24,104 +25,98 @@
 \setmonofont{TeX Gyre Cursor}[Scale=0.95]
 \babelprovide[main,import]{vietnamese}
 \AtBeginDocument{\renewcommand{\figurename}{Hình}\renewcommand{\tablename}{Bảng}%
-  \renewcommand{\abstractname}{Abstract}\renewcommand{\refname}{References}%
-  \renewcommand{\contentsname}{Mục lục}}
+  \renewcommand{\refname}{References}\renewcommand{\contentsname}{Mục lục}}
 \usepackage{setspace}
-\setstretch{1.25}
-\setlength{\parskip}{3pt}
-\setlength{\emergencystretch}{3em}               % tránh tràn lề khi có tên file / mã dài
+\setstretch{1.2}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+\setlength{\emergencystretch}{3em}
 
 % ---------- Gói chung ----------
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \graphicspath{{figures/}}
-\usepackage{booktabs,multirow,tabularx,array}
-\usepackage{adjustbox}
+\usepackage{booktabs,array}
 \usepackage[table]{xcolor}
-\usepackage{tikz}
-\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,shapes.geometric}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
-\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[font=small,labelfont=bf,labelsep=period]{caption}
 \usepackage{float}
-\usepackage{fancyvrb}
 \usepackage{url}
-\usepackage{xurl}                                  % ngắt dòng URL dài trong References
+\usepackage{xurl}
+\usepackage[round,sort]{natbib}
 \usepackage[hidelinks]{hyperref}
 \urlstyle{same}
 \usepackage{cleveref}
 
-% ---------- Macro ----------
-\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
-\newcommand{\tbd}{\textcolor{red}{\textbf{?}}}   % ô bảng chờ điền số
-\newcommand{\code}[1]{\texttt{#1}}
-\newcommand{\muda}{\textit{Muda}}
-\newcommand{\mura}{\textit{Mura}}
-\newcommand{\muri}{\textit{Muri}}
-\newcommand{\Fone}{F1@IoU0.5}
-\newenvironment{IEEEkeywords}{\par\smallskip\noindent\textbf{Từ khoá:}~}{\par}
-\renewcommand{\algorithmicrequire}{\textbf{Vào:}}
-\renewcommand{\algorithmicensure}{\textbf{Ra:}}
+% Hình, bảng, công thức đánh số theo chương (mục cấp 1), giống bản Word
+\counterwithin{figure}{section}
+\counterwithin{table}{section}
+\numberwithin{equation}{section}
 \crefname{figure}{Hình}{Hình}
 \crefname{table}{Bảng}{Bảng}
 \crefname{section}{Mục}{Mục}
 \crefname{subsection}{Mục}{Mục}
-\crefname{equation}{}{}
-\crefname{algorithm}{Thuật toán}{Thuật toán}
 
 \begin{document}
 
 % ============================== BÌA ==============================
 \begin{titlepage}
   \centering
+  \fbox{\begin{minipage}{0.92\textwidth}\centering
+  \vspace{0.6cm}
+  {\large \daihoc\par}
   {\large\bfseries \truong\par}
-  \ifx\khoa\empty\else{\large\bfseries \khoa\par}\fi
-  \vspace{0.3cm}\rule{0.6\textwidth}{0.6pt}\par
   \vspace{1.2cm}
-  \IfFileExists{figures/logo.png}{\includegraphics[height=3.5cm]{logo.png}\par\vspace{1cm}}{\vspace{2cm}}
-  {\Large\bfseries BÁO CÁO MÔN HỌC\par}
-  \vspace{0.4cm}
+  \IfFileExists{figures/logo.jpg}{\includegraphics[height=4cm]{logo.jpg}\par\vspace{1cm}}{\vspace{2cm}}
   {\LARGE\bfseries \monhoc\par}
-  \vspace{0.3cm}
-  {\large Mã môn học: \mamonhoc\par}
-  \vspace{1.5cm}
-  {\large\bfseries ĐỀ TÀI\par}
-  \vspace{0.3cm}
+  \vspace{1cm}
+  {\large\bfseries TÊN ĐỀ TÀI:\par}
+  \vspace{0.2cm}
   {\Large\bfseries \detai\par}
-  \vfill
+  \vspace{1.5cm}
   \begin{tabular}{@{}ll@{}}
-    \textbf{Giảng viên hướng dẫn:} & \giangvien \\[0.4cm]
-    \textbf{Sinh viên thực hiện:}  & \begin{tabular}[t]{@{}ll@{}}
-                                       Trịnh Gia Huy (Nhóm trưởng) & MSSV: \todo{} \\
-                                       Nguyễn Thị Nhung            & MSSV: \todo{} \\
-                                       Hoàng Tiến Đạt              & MSSV: \todo{} \\
-                                     \end{tabular}
+    \textbf{Sinh viên:} & 1.~Nguyễn Thị Nhung -- 23010607 \\
+                        & 2.~Trịnh Gia Huy -- 23010069 \\
+                        & 3.~Hoàng Tiến Đạt -- 23010864 \\[0.3cm]
+    \textbf{Ngành:}     & \nganh \\
+    \textbf{Lớp:}       & \lop \\
+    \textbf{Giảng viên hướng dẫn:} & \textit{\giangvien} \\
   \end{tabular}
-  \vfill
+  \vspace{2cm}
+
   {\large \noithoigian\par}
+  \vspace{0.6cm}
+  \end{minipage}}
 \end{titlepage}
 
-% ============================== TÓM TẮT + MỤC LỤC ==============================
+% ============================== MỤC LỤC ==============================
 \pagenumbering{roman}
 \setcounter{page}{2}
-\addcontentsline{toc}{section}{Abstract}
-\input{sections/00_abstract}
-\clearpage
 \tableofcontents
 \clearpage
 \pagenumbering{arabic}
 
 % ============================== NỘI DUNG ==============================
+\input{sections/00_abstract}
+\clearpage
 \input{sections/01_introduction}
+\clearpage
 \input{sections/02_related_work}
+\clearpage
 \input{sections/03_method}
+\clearpage
 \input{sections/04_implementation}
+\clearpage
 \input{sections/05_experiments}
+\clearpage
 \input{sections/06_conclusion}
 
 \clearpage
 \addcontentsline{toc}{section}{References}
-\bibliographystyle{IEEEtran}
+\bibliographystyle{plainnat}
 {\raggedright\bibliography{references}\par}
+
+\clearpage
+\appendix
+\input{sections/07_appendix}
 
 \end{document}
