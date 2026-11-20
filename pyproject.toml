@@ -1,0 +1,12 @@
+[project]
+name = "kaizen-motion-analyzer"
+version = "0.2.0"
+description = "AI Kaizen Motion Analyzer: video lắp ráp → keypoints → chỉ số 3M → findings → LLM giải thích có kiểm chứng"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["kaizen*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

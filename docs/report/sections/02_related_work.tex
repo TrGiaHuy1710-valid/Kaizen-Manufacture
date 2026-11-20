@@ -1,0 +1,62 @@
+% ============================== 2. OVERVIEW — RELATED WORK ==============================
+\section{Overview -- Related Work}
+\label{sec:related}
+
+\subsection{Kaizen và nghiên cứu thao tác -- thời gian}
+Hệ thống sản xuất Toyota định nghĩa ba nhóm tổn thất \muda, \mura, \muri{} và đặt cải tiến liên tục (Kaizen) làm trung tâm.
+Nghiên cứu thao tác của Barnes đưa ra các nguyên tắc tiết kiệm động tác: dùng hai tay đồng thời, giảm quãng đường với tay,
+đặt dụng cụ cố định.
+Khung ECRS (\textit{Eliminate, Combine, Rearrange, Simplify}) là cách phân loại đề xuất cải tiến được dùng rộng rãi.
+Về \muri, các phương pháp đánh giá công thái học như RULA chấm điểm tư thế chi trên theo góc khớp, trong đó có góc gập cổ tay.
+Các công cụ này đều giả định có người quan sát trực tiếp. Hệ thống của nhóm tự động hoá phần đo,
+còn phần phán đoán và phê duyệt vẫn để cho kỹ sư IE.
+
+\subsection{Ước lượng khung xương 2D}
+MediaPipe cung cấp Pose Landmarker (33 điểm thân) \cite{mp_pose} và Hand Landmarker (21 điểm mỗi bàn tay) \cite{mp_hand},
+chạy thời gian thực trên CPU.
+RTMPose \cite{rtmpose} dùng đầu ra SimCC, đạt độ chính xác cao trên COCO với chi phí thấp.
+RTMW \cite{rtmlib} mở rộng lên 133 điểm toàn thân, có cả bàn tay.
+Với trạm lắp ráp ngồi tại bàn, gần như toàn bộ thông tin nằm ở bàn tay, nên model chỉ có 17 điểm thân là không đủ
+cho các chỉ số \muri{} cổ tay.
+Cảm biến độ sâu như Azure Kinect cho skeleton 32 khớp, nhưng skeleton này vẫn là ước lượng.
+Nhóm dùng nó để đối chứng và làm nhãn giả, không coi là ground truth.
+
+\subsection{Phân đoạn hành động theo thời gian}
+Phân đoạn hành động gán nhãn cho từng frame của một video dài chưa cắt.
+MS-TCN \cite{farha2019mstcn} dùng nhiều stage tích chập giãn (dilated) để có trường tiếp nhận dài,
+kèm hàm mất mát làm mượt nhằm giảm phân mảnh. Các chỉ số chuẩn gồm độ chính xác frame, Edit score và F1@\{10,25,50\}.
+Trên dữ liệu khung xương, các mạng đồ thị như ST-GCN mô hình hoá quan hệ không gian giữa các khớp.
+Nhóm chọn MS-TCN trên đặc trưng khung xương vì model nhẹ, train được trên CPU và phù hợp với chuỗi dài
+($\sim$2500 frame mỗi chu kỳ).
+
+\subsection{Dữ liệu lắp ráp trong sản xuất}
+HA4M \cite{ha4m} ghi lại 41 người lắp bộ bánh răng hành tinh (Epicyclic Gear Train) bằng Azure Kinect,
+có RGB, độ sâu, hồng ngoại, point cloud, skeleton và nhãn hành động theo frame.
+So với các bộ dữ liệu lắp ráp gia dụng hoặc đồ chơi, HA4M gần với một trạm lắp ráp công nghiệp thật hơn:
+một người, một bàn, khay linh kiện cố định, quy trình 12 bước. Đây là dữ liệu chính của đề tài.
+
+\subsection{LLM, truy xuất tăng cường và kiểm chứng đầu ra}
+Truy xuất tăng cường (RAG) giảm việc LLM bịa thông tin bằng cách đưa tài liệu liên quan vào ngữ cảnh.
+Mô hình nhúng đa ngôn ngữ E5 \cite{e5} cùng kho vector Chroma \cite{chroma} cho phép truy xuất tài liệu tiếng Việt chạy cục bộ.
+Tuy vậy, kể cả khi có ngữ cảnh, đầu ra của LLM vẫn có thể chứa sự kiện không có trong nguồn.
+Khác với các hệ hỏi đáp chung, ở bài toán này mọi con số đều đã được code tính trước.
+Vì vậy nhóm \textit{kiểm chứng đầu ra bằng code} (whitelist số liệu và tập trích dẫn hợp lệ) thay vì tin vào chỉ dẫn
+trong prompt.
+\Cref{tab:related} tóm tắt vị trí của hệ thống so với các hướng liên quan.
+
+\begin{table}[H]
+\centering
+\caption{So sánh hướng tiếp cận}
+\label{tab:related}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Hướng & Đo tự động & Chỉ số 3M & Giải thích & Kiểm chứng số \\
+\midrule
+Bấm giờ thủ công & -- & \checkmark & \checkmark{} (người) & -- \\
+Phân đoạn hành động \cite{farha2019mstcn} & \checkmark & -- & -- & -- \\
+LLM + RAG & -- & -- & \checkmark & -- \\
+\textbf{AI Kaizen Copilot} & \checkmark & \checkmark & \checkmark & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,68 @@
+% Sơ đồ kiến trúc tổng thể (TikZ) — dùng trong figure* ở sections/03_method.tex
+\begin{tikzpicture}[
+  font=\scriptsize,
+  >={Stealth[length=2mm]},
+  box/.style={draw, rounded corners=2pt, align=center, minimum width=2.9cm, minimum height=0.95cm,
+              inner sep=2pt, fill=white},
+  nin/.style={box, fill=gray!10},
+  nout/.style={box, fill=green!8},
+  llm/.style={box, fill=orange!10},
+  grp/.style={draw=#1!60, fill=#1!5, rounded corners=4pt, inner sep=6pt},
+  lab/.style={font=\scriptsize\bfseries, text=#1!70!black},
+  flow/.style={->, thick},
+  aux/.style={->, densely dashed, gray!70!black},
+]
+% ---- cột 0: đầu vào
+\node[nin] (lab)  at (0, 1.35)  {\textbf{Labels.txt} (HA4M)\\nhãn theo frame};
+\node[nin] (vid)  at (0, 0)     {\textbf{Video RGB}\\.mp4 $|$ chuỗi ảnh $|$ HA4M};
+\node[nin] (st)   at (0, -1.3)  {\textbf{station.yaml}\\zone, 12 bước SOP, VA};
+\node[nin] (doc)  at (0, -3.9)  {\textbf{Tài liệu}\\WI / SOP / KB (PDF, DOCX, MD)};
+
+% ---- cột 1: tầng skeleton
+\node[box] (s1) at (3.75, 0)    {\textbf{01 Pose}\\MediaPipe $|$ RTMW $|$ RTMPose-ft};
+\node[box] (s2) at (3.75, -1.3) {\textbf{02 Features}\\lọc, One Euro, tốc độ, zone};
+\node[box] (s3) at (3.75, -2.6) {\textbf{03 Events}\\pick / reach / assemble / idle};
+
+% ---- cột 2: tầng analyzer
+\node[box] (a1) at (7.5, 0)     {\textbf{04 Steps}\\oracle $|$ rule $|$ MS-TCN};
+\node[box] (a2) at (7.5, -1.3)  {\textbf{05 Metrics}\\Muda $\cdot$ Mura $\cdot$ Muri};
+\node[box] (a3) at (7.5, -2.6)  {\textbf{06 Findings}\\R1--R8, xếp hạng s/chu kỳ};
+
+% ---- cột 3: tầng LLM
+\node[llm] (l2) at (11.25, -1.3) {\textbf{Validator}\\whitelist số + citation};
+\node[llm] (l1) at (11.25, -2.6) {\textbf{07 Explain}\\Gemini $|$ Claude $|$ GPT};
+\node[llm] (l0) at (11.25, -3.9) {\textbf{RAG store}\\chunk $\to$ e5 $\to$ Chroma};
+
+% ---- cột 4: đầu ra
+\node[nout] (o0) at (15.0, 0)    {\textbf{Run}\\manifest + artifact};
+\node[nout] (o1) at (15.0, -1.3) {\textbf{08 Report}\\Markdown + PNG};
+\node[nout] (o2) at (15.0, -2.6) {\textbf{UI / API}\\Streamlit, FastAPI};
+
+% ---- nhóm tầng
+\begin{scope}[on background layer]
+  \node[grp=blue,   fit=(s1)(s3), label={[lab=blue]above:Tầng 1 — skeleton}] {};
+  \node[grp=violet, fit=(a1)(a3), label={[lab=violet]above:Tầng 2 — analyzer (tất định)}] {};
+  \node[grp=orange, fit=(l2)(l0), label={[lab=orange]above:Tầng 3 — LLM}] {};
+\end{scope}
+
+% ---- luồng chính
+\draw[flow] (vid) -- node[above]{\tiny frame} (s1);
+\draw[flow] (s1) -- node[right]{\tiny .npz} (s2);
+\draw[flow] (s2) -- node[right]{\tiny .parquet} (s3);
+\draw[flow] (s3.east) -- ++(0.35,0) |- (a1.west);
+\draw[flow] (a1) -- node[right]{\tiny steps.csv} (a2);
+\draw[flow] (a2) -- node[right]{\tiny metrics.json} (a3);
+\draw[flow] (a3) -- node[above]{\tiny findings} (l1);
+\draw[flow] (l1.north) -- (l2.south);
+\draw[->, thick, red!70!black] (l2.east) .. controls +(0.55,-0.3) and +(0.55,0.3) .. node[right, align=left]{\tiny fail $\to$\\[-2pt]\tiny hỏi lại 1 lần} (l1.east);
+\draw[flow] (l2) -- node[above]{\tiny passed} (o1);
+\draw[flow] (o1) -- (o2);
+\draw[aux]  (o1) -- (o0);
+\draw[flow] (l0) -- node[right]{\tiny top-$k$ chunk} (l1);
+
+% ---- luồng phụ
+\draw[aux] (lab.east) -- (a1.north |- lab.east) node[pos=0.5, above]{\tiny chế độ oracle / eval} -- (a1.north);
+\draw[aux] (st) -- node[above]{\tiny zone} (s2);
+\draw[aux] (doc) -- node[above]{\tiny ingest (heading-aware 300--600 token)} (l0);
+\draw[aux] ($(l0.west)+(0,0.22)$) -| node[pos=0.8, right]{\tiny TG chuẩn + ngưỡng} ($(a3.south)+(0.8,0)$);
+\end{tikzpicture}

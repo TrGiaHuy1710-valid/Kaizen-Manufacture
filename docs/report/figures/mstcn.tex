@@ -1,0 +1,36 @@
+% Kiến trúc MS-TCN dùng cho phân đoạn bước (TikZ) — dùng trong sections/04_implementation.tex
+\begin{tikzpicture}[
+  font=\scriptsize,
+  >={Stealth[length=1.6mm]},
+  blk/.style={draw, rounded corners=1.5pt, align=center, minimum height=0.6cm, inner sep=2pt},
+  conv/.style={blk, fill=blue!8, minimum width=1.0cm},
+  dil/.style={blk, fill=violet!10, minimum width=0.55cm},
+  st/.style={draw=gray!70, dashed, rounded corners=3pt, inner sep=4pt},
+]
+% đầu vào
+\node[blk, fill=gray!10, align=center] (x) at (0,0) {$X\!\in\!\mathbb{R}^{105\times T}$\\kp\_v1};
+% stage 1
+\node[conv, right=0.35cm of x] (in1) {1$\times$1\\conv};
+\node[dil, right=0.25cm of in1] (d1) {$d{=}1$};
+\node[dil, right=0.1cm of d1] (d2) {$d{=}2$};
+\node[right=0.05cm of d2] (dots) {$\cdots$};
+\node[dil, right=0.05cm of dots] (dL) {$2^{L-1}$};
+\node[conv, right=0.25cm of dL] (out1) {1$\times$1\\conv};
+\node[st, fit=(in1)(out1), label={[font=\scriptsize]above:Stage 1 (dự đoán ban đầu)}] (S1) {};
+\draw[->] (x) -- (in1); \draw[->] (in1) -- (d1); \draw[->] (d1) -- (d2); \draw[->] (dL) -- (out1);
+
+% stage 2..S
+\node[blk, fill=orange!10, below=0.75cm of out1, minimum width=1.4cm] (sm) {softmax};
+\node[blk, fill=violet!5, left=0.35cm of sm, minimum width=3.4cm] (S2) {Stage 2 \dots{} Stage $S$ (tinh chỉnh)\\cùng cấu trúc, vào $= C$ kênh};
+\node[blk, fill=green!8, left=0.35cm of S2] (y) {$\hat{Y}_S\!\in\!\mathbb{R}^{C\times T}$};
+\draw[->] (out1) -- node[right]{\tiny $\hat{Y}_1$} (sm);
+\draw[->] (sm) -- (S2); \draw[->] (S2) -- (y);
+
+% chi tiết lớp giãn
+\node[draw, rounded corners=2pt, fill=violet!3, align=flush left, below=0.35cm of y.south west, anchor=north west,
+      text width=6.3cm] (res) {
+  \textbf{Lớp residual giãn} ($d=2^{\ell}$, $\ell=0..L-1$):\\
+  \quad$h \leftarrow h + \mathrm{Dropout}\big(\mathrm{Conv}_{1\times1}(\mathrm{ReLU}(\mathrm{Conv}^{d}_{3}(h)))\big)$\\
+  \textbf{Loss mỗi stage:} $\mathcal{L}_s = \mathcal{L}_{CE} + \lambda\,\mathcal{L}_{T\text{-}MSE}$ (cắt ở $\tau=4$);
+  tổng $\sum_{s=1}^{S}\mathcal{L}_s$.};
+\end{tikzpicture}

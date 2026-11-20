@@ -1,19 +1,25 @@
-"""Kaizen Motion Analyzer — dashboard demo (Streamlit). Chạy:  streamlit run app/ui.py
+"""Kaizen Motion Analyzer — UI demo theo "dự án video" (Streamlit). Chạy:  streamlit run app/ui.py
+                                                            (demo:  KAIZEN_DEMO=1 streamlit run app/ui.py)
 
-UI chỉ ĐỌC artifact của run (outputs/runs/<run_id>/): không tính lại chỉ số nào. Số do pipeline tính,
-LLM giải thích, UI hiển thị. Artifact thiếu → cảnh báo nhẹ, không crash.
+4 trang, mỗi trang MỘT hành động chính:
+  📁 Dự án          thêm video (HA4M / upload / thư mục ảnh), danh sách, chọn ≥2 → tính 3M
+  🎬 Chi tiết dự án  chạy full luồng (6 bước) · video overlay · Kaizen Brain · benchmark
+  📚 Tài liệu (RAG)  ingest tài liệu + thử truy vấn
+  📊 So sánh 3M      Mura / Muda / Muri / R1-R6 trên nhiều video + ghi chú người đánh giá
+UI chỉ gọi app/data_access.py — không mở file, không tính chỉ số. Demo mode: tiến độ MÔ PHỎNG trên dự án đã tính
+sẵn (badge cố định báo rõ), video theo nhãn chuẩn; video mới vẫn chạy THẬT (không bao giờ bịa số).
 """
 from __future__ import annotations
 
 import os
-import signal
-import subprocess
+import random
 import sys
 import time
+import traceback
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-os.chdir(REPO)                      # run_io/compare_runs dùng đường dẫn tương đối outputs/runs
+os.chdir(REPO)                      # đường dẫn tương đối (outputs/, config/, data/) tính từ repo root
 sys.path.insert(0, str(REPO / "app"))
 
 import pandas as pd  # noqa: E402
@@ -22,623 +28,603 @@ import streamlit as st  # noqa: E402
 st.set_page_config(page_title="Kaizen Motion Analyzer", page_icon="🏭", layout="wide")
 
 import charts  # noqa: E402
-import streamlit.components.v1 as components  # noqa: E402
-import video_compare as vc  # noqa: E402
 import data_access as da  # noqa: E402
-from ui_utils import fmt, unit, val  # noqa: E402
+
+P_HOME, P_PROJ, P_DOCS, P_3M = "📁 Dự án", "🎬 Chi tiết dự án", "📚 Tài liệu (RAG)", "📊 So sánh 3M"
+PAGES = [P_HOME, P_PROJ, P_DOCS, P_3M]
+DEMO_BADGE = "⚡ Demo — kết quả tính sẵn, overlay theo nhãn chuẩn"
+STATE_CHIP = {"empty": ("⚪ Chưa chạy", "#e4e3df", "#3b3a37"), "running": ("🔵 Đang chạy", "#d6e6fb", "#1d4f91"),
+              "done": ("🟢 Xong", "#d9f2e6", "#11643f"), "error": ("🔴 Lỗi", "#fbdada", "#8c1d1d")}
+STEP_ICON = {"done": "✅", "running": "⏳", "pending": "⬜", "error": "❌", "skipped": "▫️"}
+SIM_DUR = {"keypoints": None, "features": 1.5, "steps": 1.0, "metrics": 1.5, "explain": 2.5, "render": 2.0}
+BASE_MODEL_NOTE = "Model hiện tại: base (MediaPipe pretrained, chưa fine-tune) — kết quả phân đoạn là baseline."
 
 st.markdown("""<style>
-[data-testid="stMetricValue"] {font-size: 2.1rem;}
-[data-testid="stMetricLabel"] p {font-size: 1rem;}
-.muted {color: #8d8c86;}
+[data-testid="stMetricValue"] {font-size: 1.8rem;}
+.kz-demo-badge {position: fixed; top: 3.6rem; right: 1.2rem; z-index: 999990; background: #fff4d6; color: #6b4a00;
+  border: 1px solid #e9c46a; border-radius: 8px; padding: 4px 12px; font-size: .85rem; font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0,0,0,.12);}
+.kz-chip {display: inline-block; border-radius: 12px; padding: 2px 10px; font-size: .85rem; font-weight: 600;}
+.kz-muted {opacity: .5;}
 </style>""", unsafe_allow_html=True)
 
-NA = "chưa có trong run này"
-SOURCE_BADGE = {"oracle": ("oracle (nhãn HA4M)", "green", "🟢"), "pred": ("pred (CV dự đoán)", "orange", "🟠")}
-MURI_COVERAGE_MIN = 50.0
+
+# ============================ tiện ích ============================
+def go(page: str, **state) -> None:
+    """Chuyển trang ở lần chạy kế tiếp (an toàn cả trong callback lẫn thân script)."""
+    st.session_state["_nav_next"] = page
+    st.session_state.update(state)
+
+
+def fmt(v, unit: str = "", nd: int = 1) -> str:
+    """Số → chuỗi gọn ('—' nếu thiếu); số nguyên giữ nguyên."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    if isinstance(v, (int, float)):
+        s = f"{v:.{nd}f}".rstrip("0").rstrip(".") if isinstance(v, float) else str(v)
+        return f"{s}{unit}"
+    return f"{v}{unit}"
+
+
+def chip(state: str) -> str:
+    """HTML chip trạng thái dự án."""
+    lab, bg, fg = STATE_CHIP.get(state, STATE_CHIP["empty"])
+    return f'<span class="kz-chip" style="background:{bg};color:{fg}">{lab}</span>'
 
 
 def safe(title: str):
-    """Decorator: lỗi trong 1 tab → hiện lỗi gọn, các tab khác vẫn chạy."""
+    """Lỗi trong 1 trang → thông báo ngắn + chi tiết kỹ thuật trong expander (không trắng trang)."""
     def deco(fn):
         def wrap(*a, **k):
             try:
                 fn(*a, **k)
             except Exception as e:  # noqa: BLE001
-                st.error(f"Lỗi khi hiển thị {title}: {e}")
-                with st.expander("Chi tiết lỗi"):
-                    st.exception(e)
+                if type(e).__name__ in ("RerunException", "StopException"):
+                    raise
+                st.error(f"Không hiển thị được {title}: {e}")
+                with st.expander("Chi tiết kỹ thuật"):
+                    st.code(traceback.format_exc())
         return wrap
     return deco
 
 
-# ============================ Sidebar ============================
-def sidebar() -> tuple[str | None, str | None]:
-    st.sidebar.title("🏭 Kaizen Motion Analyzer")
-    runs = da.list_runs()
-    if not runs:
-        st.sidebar.warning("Chưa có run nào trong outputs/runs/. Dùng tab **Chạy pipeline** hoặc `bash run_all.sh`.")
-        return None, None
-    ids = [m["run_id"] for m in runs]
-    labels = {m["run_id"]: da.run_label(m) for m in runs}
-    if "pending_run_sel" in st.session_state:          # run mới từ tab Chạy pipeline
-        st.session_state["run_sel"] = st.session_state.pop("pending_run_sel")
-    qp = st.query_params                                # deep link: ?run=<run_id>&trial=<trial>
-    if not st.session_state.get("_qp_done"):
+def demo_on() -> bool:
+    """Demo mode đang bật (toggle sidebar)."""
+    return bool(st.session_state.get("demo"))
+
+
+# ============================ sidebar ============================
+def sidebar() -> str:
+    if not st.session_state.get("_qp_done"):            # deep link: ?page=home|project|docs|3m&id=<dự án>&agg=<id>
         st.session_state["_qp_done"] = True
-        if qp.get("run") in ids:
-            st.session_state["run_sel"] = qp.get("run")
-        if qp.get("trial"):
-            st.session_state["trial_sel"] = qp.get("trial")
-    if st.session_state.get("run_sel") not in ids:
-        st.session_state["run_sel"] = da.latest_run() if da.latest_run() in ids else ids[0]
-    run_id = st.sidebar.selectbox("Run", ids, key="run_sel", format_func=lambda r: labels[r],
-                                  help="Mới nhất ở trên. Thời điểm · nguồn bước · pose · LLM · tag")
-    st.sidebar.caption(f"`{run_id}`" + ("  ·  LATEST" if run_id == da.latest_run() else "")
-                       + f"  ·  [link](?run={run_id})")
-
-    src = da.run_source(run_id)
-    lab, color, icon = SOURCE_BADGE.get(src, (f"{src or 'không rõ'}", "gray", "⚪"))
-    st.sidebar.badge(f"Nguồn bước: {lab}", icon=icon, color=color)
-    if src == "pred":
-        st.sidebar.caption("Số liệu bước từ CV dự đoán — xem sai số vs nhãn ở tab Tổng quan.")
-    elif src == "oracle":
-        st.sidebar.caption("Số liệu bước từ nhãn HA4M (ground truth) — không phản ánh sai số CV.")
-
-    trials = da.run_trials(run_id)
-    man = da.load_manifest(run_id) or {}
-    nolab = {t for t, v in man.get("trials", {}).items() if v.get("labels_available") is False}
-    trial = None
-    if trials:
-        if st.session_state.get("trial_sel") not in trials:
-            st.session_state["trial_sel"] = trials[0]
-        trial = st.sidebar.selectbox("Trial", trials, key="trial_sel",
-                                     format_func=lambda t: f"{t}  (subject {t.split('_')[0]})"
-                                     + ("  ⚠ không nhãn" if t in nolab else ""))
-    else:
-        st.sidebar.info("Run chưa có trial nào (chưa chạy 02).")
-
-    rp = da.report_path(run_id)
-    if rp.exists():
-        st.sidebar.download_button("📄 Mở report.md", rp.read_bytes(), file_name=f"report_{run_id}.md",
-                                   mime="text/markdown", width="stretch")
-        st.sidebar.caption(f"`{rp.relative_to(REPO)}`")
-    else:
-        st.sidebar.caption("Run chưa có report.md (chưa chạy 08).")
-    return run_id, trial
+        qp = st.query_params
+        pages = {"home": P_HOME, "project": P_PROJ, "docs": P_DOCS, "3m": P_3M}
+        if qp.get("page") in pages:
+            st.session_state["_nav_next"] = pages[qp["page"]]
+        if qp.get("id"):
+            st.session_state["project"] = qp["id"]
+        if qp.get("agg"):
+            st.session_state["agg_id"] = qp["agg"]
+    if "_nav_next" in st.session_state:
+        st.session_state["nav"] = st.session_state.pop("_nav_next")
+    st.session_state.setdefault("nav", P_HOME)
+    st.session_state.setdefault("demo", da.demo_default())
+    st.session_state.setdefault("revealed", [])
+    st.sidebar.title("🏭 Kaizen Motion Analyzer")
+    page = st.sidebar.radio("Trang", PAGES, key="nav", label_visibility="collapsed")
+    st.sidebar.divider()
+    st.sidebar.toggle("Demo mode", key="demo",
+                      help="Dự án đã tính sẵn: tiến độ mô phỏng + video theo nhãn chuẩn. Video mới vẫn chạy thật.")
+    job = da.current_job()
+    if job:
+        st.sidebar.info(f"⚙️ Đang chạy pipeline: **{job['project_id']}**")
+    st.sidebar.caption("Mọi con số do code tính; LLM chỉ diễn giải, có validator kiểm số & trích dẫn.")
+    return page
 
 
-# ============================ Tab 1 — Tổng quan ============================
-@safe("Tổng quan")
-def tab_overview(run_id: str, trial: str | None):
-    met = da.load_metrics(run_id)
-    man = da.load_manifest(run_id) or {}
-    if not met:
-        st.warning("Run chưa có metrics.json (chưa chạy 05).")
-    m = (met or {}).get("trials", {}).get(trial) if trial else None
-    if met and trial and m is None:
-        st.warning(f"{trial} không có trong metrics của run này (vd trial thiếu nhãn trong run oracle).")
-    if m:
-        st.subheader(f"{trial}")
-        c = st.columns(6)
-        c[0].metric("Cycle time", fmt(val(m, "cycle_time_s"), " s"), help=m["cycle_time_s"]["definition"])
-        c[1].metric("%VA", fmt(val(m, "va_pct"), " %"), help=m["va_pct"]["definition"])
-        il, ir = val(m, "idle_left_s"), val(m, "idle_right_s")
-        c[2].metric("Idle (trái + phải)", fmt(il + ir, " s") if il is not None and ir is not None else NA,
-                    help=f"trái {fmt(il, ' s')} · phải {fmt(ir, ' s')} · cả 2 tay cùng idle {fmt(val(m, 'idle_both_s'), ' s')}")
-        c[3].metric("Số pick", fmt(val(m, "picks_total")) if val(m, "picks_total") is not None else NA,
-                    help=(m.get("picks_total") or {}).get("definition"))
-        for j, hand, lab in ((4, "left", "Quãng đường cổ tay trái"), (5, "right", "Quãng đường cổ tay phải")):
-            v = val(m, f"distance_{hand}")
-            c[j].metric(lab, fmt(v, f" {unit(m, f'distance_{hand}', 'px')}", 0) if v is not None else NA)
-        ev = m.get("eval_vs_oracle")
-        if ev:
-            c = st.columns(6)
-            err = ev.get("cycle_time_err_s")
-            c[0].metric("Sai số CT vs oracle", fmt(err, " s"),
-                        delta=f"{err:+.2f} s" if err is not None else None, delta_color="inverse",
-                        help="cycle time dự đoán − cycle time theo nhãn")
-            c[1].metric("F1@IoU0.5", fmt(ev.get("f1_iou05")), delta=f"MAE bước {fmt(ev.get('mae_step_dur_s'), ' s')}",
-                        delta_color="off")
-            c[2].metric("Bước dự đoán / nhãn", f"{ev.get('n_pred')} / {ev.get('n_oracle')}")
-            c[3].metric("Unclassified", fmt(ev.get("n_unclassified")))
-            if ev.get("no_zone"):
-                c[4].metric("Bước không có zone", ", ".join(ev["no_zone"]))
-        elif da.run_source(run_id) == "pred":
-            st.info("Không có eval vs oracle cho trial này (thiếu nhãn) — số liệu chỉ từ CV dự đoán.")
-
-    if met:
-        st.markdown("#### Mọi trial trong run")
-        rows = []
-        for st_, mm in met["trials"].items():
-            e = mm.get("eval_vs_oracle", {})
-            lab_ok = man.get("trials", {}).get(st_, {}).get("labels_available")
-            rows.append({"Trial": st_, "Cycle time (s)": val(mm, "cycle_time_s"), "%VA": val(mm, "va_pct"),
-                         "Idle trái (s)": val(mm, "idle_left_s"), "Idle phải (s)": val(mm, "idle_right_s"),
-                         "Số pick": val(mm, "picks_total"),
-                         f"QĐ trái ({unit(mm, 'distance_left', 'px')})": val(mm, "distance_left"),
-                         f"QĐ phải ({unit(mm, 'distance_right', 'px')})": val(mm, "distance_right"),
-                         "Sai số CT (s)": e.get("cycle_time_err_s"), "F1@IoU0.5": e.get("f1_iou05"),
-                         "Có nhãn": {True: "✓", False: "✗"}.get(lab_ok, "?")})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-        nolab = [t for t, v in man.get("trials", {}).items() if v.get("labels_available") is False]
-        if nolab:
-            st.caption(f"⚠ Không có nhãn: {', '.join(nolab)} — không có oracle/eval.")
-
-    with st.expander("Thông tin run (manifest)"):
-        if not man:
-            st.info("Run không có manifest.json.")
-            return
-        llm = man.get("llm") or {}
-        info = {"run_id": man.get("run_id"), "tạo lúc": man.get("created_at"), "git": man.get("git_hash"),
-                "nguồn bước": man.get("source"), "pose model": man.get("pose_model"),
-                "LLM": f"{llm.get('provider')} · {llm.get('model') or '—'}", "data_root": man.get("data_root"),
-                "chọn subject/trial": man.get("selection"), "tag": man.get("tag") or "—"}
-        st.table(pd.DataFrame({"": list(info), "giá trị": [str(v) for v in info.values()]}).set_index(""))
-        cmd = man.get("cmd")
-        st.markdown("**Lệnh tái lập:**")
-        st.code(" ".join(cmd) if isinstance(cmd, list) else str(cmd), language="bash")
-        stages = man.get("stages", {})
-        if stages:
-            st.markdown("**Các bước đã chạy:**")
-            st.dataframe(pd.DataFrame([{"stage": k, "lúc": v.get("at"), "argv": " ".join(v.get("argv", [])[1:])}
-                                       for k, v in stages.items()]), hide_index=True, width="stretch")
-        diff = da.station_diff(run_id)
-        if diff:
-            st.warning(f"station.yaml của run khác config/station.yaml hiện tại ở: {', '.join(diff)} — "
-                       "run dùng bản chụp riêng (outputs/runs/<run>/station.yaml).")
-        else:
-            st.caption("station.yaml của run trùng config/station.yaml hiện tại.")
-        st.json(man, expanded=False)
-
-
-# ============================ Tab 2 — Video & Timeline ============================
-def render_video(run_id: str, trial: str):
-    cmd = [sys.executable, str(REPO / "src" / "tools" / "render_demo.py"), "--run", run_id, "--trial", trial, "--force"]
-    with st.status("Đang render video demo…", expanded=True) as s:
-        log = st.empty()
-        lines = []
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=REPO)
-        for ln in p.stdout:
-            lines.append(ln.rstrip())
-            log.code("\n".join(lines[-12:]), language=None)
-        p.wait()
-        s.update(label="Render xong" if p.returncode == 0 else f"Render lỗi (exit {p.returncode})",
-                 state="complete" if p.returncode == 0 else "error")
-    return p.returncode == 0
-
-
-@st.fragment
-def frame_viewer(run_id: str, trial: str, t_max: float, starts: list[tuple[str, float]]):
-    key = f"t_{run_id}_{trial}"
-    if starts:
-        def jump():
-            sel = st.session_state.get(f"j_{key}")
-            if sel:
-                st.session_state[key] = round(dict(starts)[sel], 1)
-        st.selectbox("Nhảy tới đầu bước", [s for s, _ in starts], key=f"j_{key}", on_change=jump, index=None,
-                     placeholder="chọn bước…")
-    t_max = float(round(t_max, 1))
-    if key not in st.session_state or not 0 <= st.session_state[key] <= t_max:
-        st.session_state[key] = 0.0
-    t = st.slider("Thời điểm (s)", 0.0, t_max, key=key, step=0.1)
-    img = da.load_frame(run_id, trial, t)
-    if img is None:
-        st.warning("Không đọc được ảnh gốc (kiểm tra data_root trong manifest).")
-    else:
-        st.image(img, caption=f"{trial} · t = {t:.1f} s (frame tĩnh có overlay)", width=960)
-
-
-@safe("Video & Timeline")
-def tab_video(run_id: str, trial: str | None):
-    if not trial:
-        st.info("Chọn trial ở sidebar.")
-        return
-    steps = {k: df for k in ("oracle", "pred") if (df := da.load_steps(run_id, trial, k)) is not None}
-    ev = da.load_events(run_id, trial)
-
-    st.markdown("#### 🎬 Video overlay")
-    vp = da.demo_video(run_id, trial)
-    if vp.exists():
-        st.video(str(vp))
-        st.caption(f"`{vp.relative_to(REPO)}` · overlay: zone (màu theo bước), vệt cổ tay ~1 s, bước hiện tại, trạng thái tay")
-        if st.button("Render lại video", key=f"rr_{run_id}_{trial}"):
-            if render_video(run_id, trial):
-                st.rerun()
-    else:
-        st.info("Run này chưa có video demo cho trial.")
-        if st.button("Render video demo (~1-2 phút)", type="primary", key=f"r_{run_id}_{trial}"):
-            if render_video(run_id, trial):
-                st.rerun()
-
-    st.markdown("#### Timeline bước")
-    if not steps:
-        st.warning("Run chưa có steps cho trial này (chưa chạy 04).")
-    else:
-        if len(steps) == 2:
-            st.caption("2 hàng: bước theo nhãn (oracle) và bước CV dự đoán (pred) — so lệch trực tiếp.")
-        show_ev = st.toggle("Hiện event cổ tay", value=False, key="gantt_ev") and ev is not None
-        st.plotly_chart(charts.gantt(steps, ev if show_ev else None), width="stretch", key=f"g_{run_id}_{trial}")
-
-    st.markdown("#### Xem frame tại thời điểm")
-    feat = da.load_features(run_id, trial)
-    t_max = float(feat["t"].max()) if feat is not None else max((float(d["end_s"].max()) for d in steps.values()), default=0.0)
-    src = da.run_source(run_id)
-    base = steps.get(src) if src in steps else next(iter(steps.values()), None)
-    starts = []
-    if base is not None:
-        for r in base.itertuples():
-            lab = "Unclassified" if r.step_id == 0 else f"B{r.step_id}{f'.{r.repetition}' if r.repetition else ''} · {r.name}"
-            starts.append((f"{lab} @ {r.start_s:.1f}s", float(r.start_s)))
-    if t_max > 0:
-        frame_viewer(run_id, trial, t_max, starts)
-    else:
-        st.warning(NA)
-
-
-# ============================ Tab — So sánh video ============================
-@safe("So sánh video")
-def tab_video_compare(run_id: str, trial: str | None):
-    runs = da.list_runs()
-    ids = [m["run_id"] for m in runs]
-    labels = {m["run_id"]: da.run_label(m) for m in runs}
-    st.caption("Phát 2 video overlay cạnh nhau, đồng bộ. **Nhảy tới bước** đưa mỗi video tới đầu bước đó theo mốc "
-               "của chính trial ấy → so cách thao tác cùng một bước giữa 2 lần lắp (vd V001 vs V002) hoặc giữa 2 run "
-               "(oracle vs pred).")
-    sides = []
-    for name, col in zip(("A", "B"), st.columns(2)):
-        with col:
-            st.markdown(f"**Video {name}**")
-            r = st.selectbox(f"Run {name}", ids, index=ids.index(run_id) if run_id in ids else 0,
-                             format_func=lambda x: labels[x], key=f"vc_run_{name}")
-            trs = da.run_trials(r)
-            if not trs:
-                st.warning("Run chưa có trial nào.")
-                sides.append(None)
-                continue
-            if name == "A":
-                idx = trs.index(trial) if trial in trs else 0
-            else:
-                a_tr = sides[0][1] if sides and sides[0] else None
-                others = [x for x in trs if x != a_tr]
-                idx = trs.index(others[0]) if others else 0
-            t = st.selectbox(f"Trial {name}", trs, index=idx, key=f"vc_trial_{name}_{r}")
-            vp = da.demo_video(r, t)
-            if vp.exists():
-                st.caption(f"✓ `{vp.relative_to(REPO)}` · {vp.stat().st_size / 1e6:.1f} MB")
-            else:
-                st.warning("Chưa có video overlay cho lựa chọn này.")
-                if st.button(f"Render video {name} (~1-2 phút)", key=f"vc_render_{name}_{r}_{t}"):
-                    if render_video(r, t):
-                        st.rerun()
-            sides.append((r, t, vp))
-    if not all(sd and sd[2].exists() for sd in sides):
-        st.info("Cần có đủ 2 video để so sánh — render video còn thiếu ở trên.")
-        return
-    if sides[0][:2] == sides[1][:2]:
-        st.info("Hai bên đang là cùng một video — chọn trial hoặc run khác cho B.")
-    both_oracle = all(da.load_steps(r, t, "oracle") is not None for r, t, _ in sides)
-    align = st.radio("Căn bước theo", ["oracle", "run"], horizontal=True, index=0 if both_oracle else 1,
-                     format_func=lambda x: "nhãn HA4M (oracle) — chuẩn nhất để căn" if x == "oracle"
-                     else "bước của run (oracle hoặc pred tuỳ run)", key="vc_align")
-    if align == "oracle" and not both_oracle:
-        st.caption("⚠ Một bên không có nhãn → dùng bước của run cho bên đó.")
-    payload = []
-    for name, (r, t, vp) in zip(("A", "B"), sides):
-        steps, src = da.steps_for_run(r, t, "oracle" if align == "oracle" else None)
-        payload.append({"title": f"{name} · {t}", "subtitle": f"{labels[r]} · bước: {src or 'không có'}",
-                        "b64": da.video_b64(vp), "steps": vc.steps_payload(steps)})
-    components.html(vc.build_html(*payload), height=690)
-    st.caption("Mốc bước đọc từ steps của từng run (nguồn ghi ở phụ đề). Khoá đồng bộ giữ B = A + độ lệch khi phát.")
-
-
-# ============================ Tab 3 — Muda ============================
-@safe("Muda")
-def tab_muda(run_id: str, trial: str | None):
-    met = da.load_metrics(run_id)
-    if not met or not met.get("trials"):
-        st.warning("Run chưa có metrics.json (chưa chạy 05).")
-        return
-    trials = met["trials"]
-    cfg = da.station(run_id)
-    st.markdown("#### Yamazumi")
-    st.caption("Click legend để ẩn/hiện bước. Số trên thanh = id bước; ? = chưa gán bước (unclassified).")
-    st.plotly_chart(charts.yamazumi(trials, cfg.get("cycle_time_target_s")), width="stretch", key=f"y_{run_id}")
-
-    m = trials.get(trial) if trial else None
-    st.markdown(f"#### Chi tiết bước — {trial or ''}")
-    if m is None:
-        st.info("Trial không có trong metrics của run này.")
-    else:
-        df = pd.DataFrame(m["steps"]["rows"]).rename(columns={
-            "step_id": "Bước", "name": "Tên", "va": "VA", "n_rep": "Lần", "dur_s": "Dur (s)", "pct_cycle": "% chu kỳ",
-            "start_s": "Start (s)", "end_s": "End (s)", "left_idle_pct": "Idle trái %", "right_idle_pct": "Idle phải %",
-            "left_active_pct": "Active trái %", "right_active_pct": "Active phải %"})
-        st.dataframe(df, hide_index=True, width="stretch")
-        st.caption(" · ".join(f"**{k}**: {v}" for k, v in m["steps"]["definition"].items()))
-
-    if len(trials) >= 2:
-        st.markdown("#### So sánh dur từng bước giữa trial")
-        top = (met.get("mura", {}).get("top_cv_steps") or [{}])[0].get("step_id")
-        st.plotly_chart(charts.step_compare(trials, top), width="stretch", key=f"sc_{run_id}")
-        if top:
-            st.caption(f"Bước chênh nhiều nhất giữa các trial (CV cao nhất, do 05_metrics tính): **B{top}**.")
-
-
-# ============================ Tab 4 — Mura & Muri ============================
-@safe("Mura & Muri")
-def tab_mura_muri(run_id: str, trial: str | None):
-    met = da.load_metrics(run_id)
-    if not met:
-        st.warning("Run chưa có metrics.json (chưa chạy 05).")
-        return
-    mura = met.get("mura", {})
-    ct = mura.get("all_trials", {}).get("cycle_time", {})
-    st.markdown("#### Mura — biến động")
-    if (ct.get("n") or 0) < 2:
-        st.info("Mura cần ≥ 2 trial trong run. Ví dụ chạy nhiều trial của cùng subject:")
-        st.code("bash run_all.sh --subjects U001 --trials all --oracle --dry-run --tag mura", language="bash")
-    else:
-        c = st.columns(4)
-        c[0].metric("Số trial", ct["n"])
-        c[1].metric("Cycle time TB", fmt(ct.get("mean"), " s"))
-        c[2].metric("Std", fmt(ct.get("std"), " s"))
-        c[3].metric("CV cycle time", fmt(ct.get("cv"), "", 3))
-        st.plotly_chart(charts.cycle_box({t: m["cycle_time_s"]["value"] for t, m in met["trials"].items()}, ct.get("mean")),
-                        width="stretch", key=f"cb_{run_id}")
-        rows = [{"Bước": int(s), "n": v.get("n"), "mean (s)": v.get("mean"), "std (s)": v.get("std"), "CV": v.get("cv")}
-                for s, v in mura.get("all_trials", {}).get("steps", {}).items()]
-        df = pd.DataFrame(rows)
-        if len(df):
-            st.markdown("CV theo bước (tô đỏ CV > 0.25 — ngưỡng R6):")
-            sty = df.style.format({"mean (s)": "{:.2f}", "std (s)": "{:.2f}", "CV": "{:.3f}"}, na_rep="—")
-            cell = getattr(sty, "map", None) or sty.applymap      # pandas < 2.1 chỉ có applymap
-            st.dataframe(cell(lambda v: "background-color:#fbe3e3;color:#a12b2b"
-                              if isinstance(v, float) and v > 0.25 else "", subset=["CV"]),
-                         hide_index=True, width="stretch")
-        ws = [{"Subject": s, "n": v["cycle_time"].get("n"), "mean (s)": v["cycle_time"].get("mean"),
-               "CV": v["cycle_time"].get("cv"), "ghi chú": v["cycle_time"].get("note", "")}
-              for s, v in mura.get("within_subject", {}).items()]
-        st.markdown("Trong từng subject:")
-        st.dataframe(pd.DataFrame(ws), hide_index=True, width="stretch")
-        b = mura.get("between_subjects", {}).get("cycle_time", {})
-        st.caption(f"Giữa các subject: n={b.get('n')}, CV={b.get('cv')} {b.get('note', '')}")
-
-    st.markdown("#### Muri — tư thế cổ tay")
-    st.caption("⚠ ước lượng 2D, chỉ mang tính sàng lọc — cần đánh giá ergonomic chuẩn để kết luận.")
+# ============================ Trang 1 — Dự án ============================
+def _selected_ids(projs: list[dict]) -> list[str]:
+    stt = st.session_state.get("proj_table")
     rows = []
-    for st_, m in met["trials"].items():
-        mw = m.get("muri_wrist", {})
-        for hand, lab in (("left", "trái"), ("right", "phải")):
-            h = mw.get(hand, {})
-            cov = val(h, "coverage_pct") if h.get("available") else h.get("coverage_pct")
-            rows.append({"Trial": st_, "Tay": lab, "Coverage %": cov, "Góc trung vị (°)": val(h, "median_angle_deg"),
-                         "% lệch > 30°": val(h, "dev_gt_thr_pct"), "P90 độ lệch (°)": val(h, "dev_p90_deg"),
-                         "Tin cậy": "kém (độ phủ thấp)" if (cov or 0) < MURI_COVERAGE_MIN else "được"})
-    if not rows:
-        st.info(NA)
+    try:
+        rows = list(stt["selection"]["rows"]) if stt else []
+    except (KeyError, TypeError):
+        rows = []
+    return [projs[i]["id"] for i in rows if i < len(projs)]
+
+
+def _do_3m(ids: list[str]) -> None:
+    try:
+        agg = da.compute_3m(ids)
+    except Exception as e:  # noqa: BLE001
+        st.session_state["agg_error"] = f"Không tính được 3M: {e}"
         return
+    if agg.ok:
+        st.session_state.pop("agg_error", None)
+        go(P_3M, agg_id=agg.agg_id)
+    else:
+        st.session_state["agg_error"] = agg.error + (
+            "" if not agg.skipped else " · bỏ qua: " + "; ".join(f"{s['project_id']} ({s['reason']})" for s in agg.skipped))
+
+
+def add_video_form() -> None:
+    with st.container(border=True):
+        st.markdown("**Thêm video mới** — 1 video = 1 dự án")
+        kind = st.radio("Nguồn", ["Trial HA4M", "Upload video (.mp4)", "Thư mục ảnh"], horizontal=True, key="add_kind")
+        if kind == "Upload video (.mp4)" and demo_on():
+            st.info(BASE_MODEL_NOTE + " Video mới luôn được xử lý thật, không dùng kết quả tính sẵn.")
+        with st.form("add_form", clear_on_submit=True, border=False):
+            trial = up = folder = None
+            fps, max_s = 30.0, 0.0
+            if kind == "Trial HA4M":
+                trials = da.ha4m_trials()
+                if not trials:
+                    st.warning("Không thấy trial HA4M nào trong data/ha4m.")
+                trial = st.selectbox("Trial", trials) if trials else None
+            elif kind == "Upload video (.mp4)":
+                up = st.file_uploader("File video", type=["mp4", "mov", "avi", "mkv", "m4v", "webm"])
+                max_s = st.number_input("Chỉ xử lý N giây đầu (0 = cả video)", 0.0, 3600.0, 90.0, 10.0,
+                                        help="Video dài: nên giới hạn 60–90 s đầu để chạy nhanh trên CPU.")
+            else:
+                folder = st.text_input("Đường dẫn thư mục ảnh", placeholder="vd data/my_frames")
+                fps = st.number_input("fps của chuỗi ảnh", 1.0, 240.0, 30.0)
+            name = st.text_input("Tên dự án", placeholder="để trống = tự điền theo file / trial")
+            ok = st.form_submit_button("Tạo dự án")
+        if ok:
+            try:
+                if kind == "Trial HA4M":
+                    if not trial:
+                        st.warning("Chưa chọn trial.")
+                        return
+                    info = da.create_ha4m(trial, name)
+                elif kind == "Upload video (.mp4)":
+                    if up is None:
+                        st.warning("Chưa chọn file video.")
+                        return
+                    info = da.create_upload(up.getvalue(), up.name, name, max_s or None)
+                else:
+                    if not folder:
+                        st.warning("Chưa nhập thư mục ảnh.")
+                        return
+                    info = da.create_frames(folder, fps, name)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Không tạo được dự án: {e}")
+                return
+            st.session_state["show_add"] = False
+            go(P_PROJ, project=info["id"])
+            st.rerun()
+
+
+@safe("danh sách dự án")
+def page_home() -> None:
+    st.title("📁 Dự án video")
+    projs = da.list_projects()
+    sel = _selected_ids(projs)
+    multi = len(sel) >= 2
+    c1, c2, _ = st.columns([1.2, 2.2, 3])
+    c1.button("➕ Thêm video", type="secondary" if multi else "primary", width="stretch",
+              on_click=lambda: st.session_state.update(show_add=not st.session_state.get("show_add")))
+    if multi:
+        c2.button(f"📊 Tính 3M các video đã chọn ({len(sel)})", type="primary", width="stretch",
+                  on_click=_do_3m, args=(sel,))
+    elif len(sel) == 1:
+        c2.button("🎬 Mở dự án đã chọn", width="stretch", on_click=go, args=(P_PROJ,),
+                  kwargs={"project": sel[0]})
+    if st.session_state.get("agg_error"):
+        st.warning(st.session_state["agg_error"])
+    if st.session_state.get("show_add"):
+        add_video_form()
+    old = da.unadopted_runs()
+    if not projs:
+        st.info("Chưa có dự án — bấm **➕ Thêm video** để bắt đầu.")
+        if old:
+            adopt_box(old, expanded=True)
+        return
+    st.caption("Chọn 1 dòng để mở dự án, chọn ≥ 2 dòng để tính 3M tổng hợp.")
+    rows = []
+    for p in projs:
+        rows.append({"Ảnh": p.get("thumb_uri"), "Tên": p.get("name") or p["id"], "Mã": p["id"],
+                     "Trạng thái": STATE_CHIP.get(p.get("status"), STATE_CHIP["empty"])[0],
+                     "Nguồn bước": da.source_badge(p.get("source")) if p.get("source") else "—",
+                     "Cycle time (s)": p.get("cycle_time_s"),
+                     "F1@IoU0.5": p.get("f1_iou05") if p.get("labels_available") else None,
+                     "Ngày chạy": (p.get("run_at") or "").replace("T", " ")[:16] or "—"})
     df = pd.DataFrame(rows)
 
-    def fade(row):
-        low = (row["Coverage %"] or 0) < MURI_COVERAGE_MIN
-        return ["color:#a8a7a1" if low else "" for _ in row]
-    st.dataframe(df.style.apply(fade, axis=1), hide_index=True, width="stretch")
-    st.caption(f"Dòng mờ: coverage < {MURI_COVERAGE_MIN:g}% — độ phủ thấp, kém tin cậy (thường do tay bị thân che).")
+    def color(v):
+        for lab, bg, fg in STATE_CHIP.values():
+            if v == lab:
+                return f"background-color:{bg};color:{fg};font-weight:600"
+        return ""
+    sty = df.style.applymap(color, subset=["Trạng thái"]).format({"Cycle time (s)": lambda v: fmt(v),
+                                                               "F1@IoU0.5": lambda v: fmt(v, nd=3)}, na_rep="—")
+    st.dataframe(sty, key="proj_table", on_select="rerun", selection_mode="multi-row", hide_index=True,
+                 width="stretch", row_height=64,
+                 column_config={"Ảnh": st.column_config.ImageColumn("Ảnh", width="small")})
+    if old:
+        adopt_box(old)
 
 
-# ============================ Tab 5 — Findings ============================
-VALID_BADGE = {"passed": ("✅ đạt", "green"), "failed_after_retry": ("❌ lỗi sau retry", "red"),
-               "failed": ("❌ lỗi", "red"), "parse_failed": ("❌ không parse được", "red")}
+def adopt_box(old: list[str], expanded: bool = False) -> None:
+    with st.expander(f"📦 {len(old)} run cũ chưa thuộc dự án nào", expanded=expanded):
+        rid = st.selectbox("Run cũ (outputs/runs/)", old, key="adopt_sel")
+        if st.button("Bọc run này thành dự án"):
+            try:
+                made = da.adopt(rid)
+                st.success(f"Đã tạo dự án: {', '.join(made)}" if made else "Run này đã được bọc trước đó.")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Không adopt được: {e}")
 
 
-def citation_chips(cites: list[str], key: str):
-    if not cites:
-        st.caption("Không có citation.")
-        return
-    cols = st.columns(min(len(cites), 6))
-    for i, c in enumerate(cites):
-        with cols[i % len(cols)].popover(c, width="stretch"):
-            txt = da.kb_lookup(c)
-            st.markdown(txt if txt else f"_Không tìm thấy {c} trong kaizen_kb.md / sop.md_")
+# ============================ Trang 2 — Chi tiết dự án ============================
+def simulate(pid: str) -> None:
+    """Demo mode: tiến độ MÔ PHỎNG 6 bước (không gọi pipeline) rồi mở kết quả tính sẵn."""
+    k = da.demo_speed()
+    with st.status("Đang xử lý video…", expanded=True) as box:
+        for key, label in da.STEPS:
+            ph = st.empty()
+            box.update(label=f"{label}…")
+            if key == "keypoints":
+                ph.markdown(f"⏳ **{label}** — {da.POSE_MODEL_LABEL}")
+                bar = st.progress(0, text="0%")
+                d = random.uniform(4.0, 6.0) * k
+                for i in range(1, 21):
+                    time.sleep(d / 20)
+                    bar.progress(i * 5, text=f"{i * 5}%")
+            else:
+                ph.markdown(f"⏳ **{label}**")
+                time.sleep(SIM_DUR[key] * k)
+            ph.markdown(f"✅ **{label}**" + (f" — {da.POSE_MODEL_LABEL}" if key == "keypoints" else ""))
+        box.update(label="Xong — hiển thị kết quả tính sẵn", state="complete", expanded=False)
 
 
-@safe("Findings")
-def tab_findings(run_id: str, trial: str | None):
-    fd = da.load_findings(run_id)
-    ex = da.load_explained(run_id)
-    if not fd:
-        st.warning("Run chưa có findings.json (chưa chạy 06).")
-        return
-    if ex is None:
-        st.warning("Run chưa chạy 07 (chưa có explained.json) — chỉ hiện findings rule-based.")
-    else:
-        c = st.columns(4)
-        prov = ex.get("provider", ex.get("mode"))
-        c[0].metric("Provider LLM", prov, help=ex.get("llm_model") or "")
-        c[1].metric("Pass lần 1", fmt((ex.get("pass_rate_first_attempt") or 0) * 100, " %", 0)
-                    if ex.get("pass_rate_first_attempt") is not None else NA)
-        c[2].metric("Pass sau retry", fmt((ex.get("pass_rate") or 0) * 100, " %", 0) if ex.get("pass_rate") is not None else NA)
-        c[3].metric("Số finding retry", ex.get("n_retried", 0))
-        st.caption(f"Validator: {ex.get('validator', '')}")
-    exps = {e["finding_id"]: e for e in (ex or {}).get("explanations", [])}
-    findings = fd.get("findings", [])
-    if not findings:
-        st.info("Không có finding nào vượt ngưỡng trong run này.")
-    for i, f in enumerate(findings):
-        e = f["evidence"]
-        sev = {"high": "🔴", "med": "🟠", "low": "🟡"}.get(f["severity"], "⚪")
-        with st.expander(f"{sev} **{f['id']}** · {f['rule']} · {f['type']} · severity {f['severity']} · "
-                         f"confidence {f['confidence']} — {e['metric']} = {e['value']} {e['unit']}", expanded=(i == 0)):
-            left, right = st.columns([3, 2])
-            with left:
-                st.markdown(f"**Bằng chứng:** {e['metric']} = **{e['value']} {e['unit']}** · trial {', '.join(e['trials'])}")
-                st.markdown(f"**Ảnh hưởng:** {f['impact_s_per_cycle']} s/chu kỳ · điểm xếp hạng {f.get('rank_score')}")
-                ctx = {k: v for k, v in e.items() if k not in ("metric", "value", "unit", "trials", "timestamps")}
-                if ctx:
-                    st.caption("Ngữ cảnh: " + " · ".join(f"{k}={v}" for k, v in ctx.items()))
-                if e.get("timestamps"):
-                    st.caption(f"Mốc thời gian (s): {e['timestamps'][:5]}")
-                x = exps.get(f["id"])
-                st.markdown("---")
-                if ex is None:
-                    st.caption("Chưa có giải thích LLM (run chưa chạy 07).")
-                elif x is None:
-                    st.caption("LLM không có giải thích cho finding này.")
-                else:
-                    fin = x.get("final", x)
-                    status = x.get("validation")
-                    status = status.get("status") if isinstance(status, dict) else status
-                    if (ex.get("provider") or ex.get("mode")) == "dry-run":
-                        st.badge("dry-run (văn bản giả)", color="gray", icon="🧪")
-                    lab, colr = VALID_BADGE.get(status, (str(status), "gray"))
-                    if status == "passed" and len(x.get("attempts", [])) > 1:
-                        lab = "✅ đạt sau retry"
-                    st.badge(lab, color=colr)
-                    msg = (x.get("final_check") or {}).get("message")
-                    if status != "passed" and msg:
-                        st.caption(f"Validator: {msg}")
-                    st.markdown(f"**Quan sát:** {fin.get('observation', '')}")
-                    st.markdown(f"**Giả thuyết:** {fin.get('hypothesis', '')}")
-                    st.markdown(f"**Đề xuất:** {fin.get('recommendation', '')}")
-                    cites = (x.get("final_check") or {}).get("citations_normalized") or fin.get("citations", [])
-                    st.markdown("**Trích dẫn** (click để xem nguyên văn):")
-                    citation_chips(cites, f"{run_id}_{f['id']}")
-            with right:
-                img = da.asset(run_id, f"evidence_{f['id']}.png")
-                if img:
-                    st.image(str(img), caption="Frame bằng chứng (08_report)", width="stretch")
-                else:
-                    st.caption("Chưa có ảnh bằng chứng (chạy 08).")
-    notes = fd.get("notes", [])
-    if notes:
-        st.markdown("#### Rule bị bỏ qua / sanity check")
-        for n in notes:
-            st.markdown(f"<span class='muted'>• {n}</span>", unsafe_allow_html=True)
+def _status_box(s: dict) -> None:
+    steps = s.get("steps") or [{"key": k, "label": lab, "state": "pending", "detail": ""} for k, lab in da.STEPS]
+    run = s.get("state_now") == "running"
+    lab = "Đang chạy full luồng…" if run else ("Lỗi khi chạy" if s.get("state_now") == "error" else "Lần chạy gần nhất")
+    with st.status(lab, state="running" if run else ("error" if s.get("state_now") == "error" else "complete"),
+                   expanded=run):
+        for x in steps:
+            det = x.get("detail") or (da.POSE_MODEL_LABEL if x["key"] == "keypoints" else "")
+            st.markdown(f"{STEP_ICON.get(x['state'], '⬜')} **{x['label']}**" + (f" — {det}" if det else ""))
+        for n in s.get("notes") or []:
+            st.caption(f"ℹ️ {n}")
 
 
-# ============================ Tab 6 — So sánh run ============================
-@safe("So sánh run")
-def tab_compare():
-    runs = da.list_runs()
-    if len(runs) < 2:
-        st.info("Cần ≥ 2 run để so sánh.")
-        return
-    labels = {m["run_id"]: da.run_label(m) for m in runs}
-    ids = st.multiselect("Chọn ≥ 2 run", [m["run_id"] for m in runs], default=[m["run_id"] for m in runs[:2]],
-                         format_func=lambda r: f"{labels[r]}  ({r})")
-    if len(ids) < 2:
-        st.info("Chọn ít nhất 2 run.")
-        return
-    res = da.compare(ids)
-    cols = da.COMPARE_COLS
-    df = pd.DataFrame(res["summary"])[[k for k, _ in cols]].rename(columns=dict(cols))
-    st.markdown("#### Tổng hợp theo run (trung bình các trial — cùng hàm với `compare_runs.py`)")
-    st.dataframe(df, hide_index=True, width="stretch")
-    st.plotly_chart(charts.compare_bars(res["summary"], [("cycle_s", "Cycle time (s)"), ("va_pct", "%VA"),
-                                                          ("f1", "F1@IoU0.5"), ("pass", "Pass LLM")]),
-                    width="stretch", key="cmp_bars")
-    if res["per_trial"]:
-        st.markdown("#### Cycle time theo trial (s)")
-        st.dataframe(pd.DataFrame(res["per_trial"]), hide_index=True, width="stretch")
-    st.code("python src/tools/compare_runs.py " + " ".join(ids), language="bash")
-
-
-# ============================ Tab 7 — Chạy pipeline ============================
-def job_cmd(f: dict) -> list[str]:
-    cmd = ["bash", "run_all.sh", "--provider", f["provider"]]
-    if f["oracle"]:
-        cmd.append("--oracle")
-    for flag in ("subjects", "trials", "tag", "data_root", "llm_model"):
-        if f.get(flag):
-            cmd += [f"--{flag.replace('_', '-')}", f[flag]]
-    return cmd
-
-
-@st.fragment(run_every=1.0)
-def job_panel():
-    job = st.session_state.get("job")
-    if not job:
-        return
-    p: subprocess.Popen = job["proc"]
-    log = Path(job["log"]).read_text(encoding="utf-8", errors="replace") if Path(job["log"]).exists() else ""
-    rc = p.poll()
-    state = "đang chạy" if rc is None else ("xong" if rc == 0 else f"lỗi (exit {rc})")
-    st.markdown(f"**Job:** `{' '.join(job['cmd'])}` — {state} · {time.time() - job['t0']:.0f}s")
-    if rc is None and st.button("⏹ Hủy job", key="cancel_job"):
-        try:
-            os.killpg(p.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    st.code("\n".join(log.splitlines()[-40:]) or "(chưa có log)", language=None)
-    if rc is not None and not job.get("handled"):
-        job["handled"] = True
-        new = da.latest_run()
-        if rc == 0 and new and new not in job["before"]:
-            st.session_state["pending_run_sel"] = new
-            st.success(f"Run mới: {new}")
+@st.fragment(run_every="2s")
+def live_progress(pid: str) -> None:
+    s = da.project_status(pid)
+    _status_box(s)
+    if s.get("state_now") != "running":
         st.rerun(scope="app")
 
 
-@safe("Chạy pipeline")
-def tab_run():
-    job = st.session_state.get("job")
-    running = bool(job) and job["proc"].poll() is None
-    with st.form("run_form"):
-        c = st.columns(3)
-        subjects = c[0].text_input("Subjects", "U001", help="vd U001,U002 hoặc all")
-        trials = c[1].text_input("Trials", "all", help="vd V001,V002 hoặc all")
-        data_root = c[2].text_input("Data root", "data/ha4m", help="nhiều thư mục cách nhau dấu phẩy")
-        c = st.columns(4)
-        source = c[0].radio("Nguồn bước", ["oracle", "pred"], horizontal=True)
-        provider = c[1].selectbox("LLM provider", ["dry-run", "gemini", "anthropic"])
-        llm_model = c[2].text_input("LLM model (tuỳ chọn)", "")
-        tag = c[3].text_input("Tag", "ui")
-        submitted = st.form_submit_button("▶ Chạy run_all.sh", type="primary", disabled=running)
-    need = {"gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
-    if provider in need and not any(os.environ.get(k) for k in need[provider]):
-        st.warning(f"Thiếu {need[provider][0]} trong môi trường của Streamlit — run sẽ dừng ngay. Chọn dry-run "
-                   "hoặc export key rồi khởi động lại `streamlit run app/ui.py`.")
-    st.caption("Trial chưa có keypoints sẽ được trích trước (~6 phút/video). Chỉ 1 job một lúc.")
-    if submitted and not running:
-        f = dict(subjects=subjects.strip(), trials=trials.strip(), data_root=data_root.strip(), oracle=source == "oracle",
-                 provider=provider, llm_model=llm_model.strip(), tag=tag.strip())
-        cmd = job_cmd(f)
-        logd = REPO / "outputs" / "ui_jobs"
-        logd.mkdir(parents=True, exist_ok=True)
-        logp = logd / f"{time.strftime('%Y%m%d-%H%M%S')}.log"
-        fh = open(logp, "w", encoding="utf-8")
-        env = dict(os.environ, PY=sys.executable, PYTHONUNBUFFERED="1")
-        p = subprocess.Popen(cmd, cwd=REPO, stdout=fh, stderr=subprocess.STDOUT, env=env, start_new_session=True)
-        st.session_state["job"] = {"proc": p, "log": str(logp), "cmd": cmd, "t0": time.time(),
-                                   "before": {m["run_id"] for m in da.list_runs()}}
+def block_run(p: dict) -> None:
+    pid, demo = p["id"], demo_on()
+    s = da.project_status(pid)
+    state = s.get("state_now", "empty")
+    job = da.current_job()
+    sim = st.session_state.get("sim_running")
+    st.markdown(chip(state) + (f" &nbsp; run `{p.get('run_id')}`" if p.get("run_id") else ""), unsafe_allow_html=True)
+    ready, missing = da.demo_ready(pid) if demo else (False, [])
+    if state == "running":
+        live_progress(pid)
+        return
+    busy = bool(job) or bool(sim)
+    if busy and (not job or job.get("project_id") != pid):
+        st.info(f"⏸ Đang chạy dự án **{job['project_id'] if job else '(mô phỏng)'}** — nút chạy tạm khoá, chờ xong.")
+    if demo and ready:
+        if st.button("▶ Chạy full luồng", type="primary", disabled=busy, key="run_btn"):
+            st.session_state["sim_running"] = True
+            try:
+                simulate(pid)
+            finally:
+                st.session_state["sim_running"] = False
+            if pid not in st.session_state["revealed"]:
+                st.session_state["revealed"].append(pid)
+            st.rerun()
+        return
+    if demo and p.get("labels_available") and not ready:
+        st.warning("Dự án này chưa tính sẵn — chạy thật?")
+        with st.expander("Còn thiếu"):
+            st.write(", ".join(missing))
+        label = "▶ Chạy thật"
+    else:
+        label = "▶ Chạy full luồng"
+        if demo:
+            st.caption(BASE_MODEL_NOTE)
+    if st.button(label, type="primary", disabled=busy, key="run_btn"):
+        ok, msg = da.start_job(pid)
+        (st.toast if ok else st.warning)(msg)
+        time.sleep(0.3)
         st.rerun()
-    job_panel()
+    if state == "error":
+        st.error(s.get("message") or "Lần chạy trước bị lỗi.")
+        with st.expander("Log lỗi"):
+            st.code(da.log_tail(pid) or "(không có log)")
+    elif state != "empty" and s.get("steps"):
+        _status_box(s)
 
 
-# ============================ Main ============================
-run_id, trial = sidebar()
-TABS = ["📊 Tổng quan", "🎬 Video & Timeline", "🎞️ So sánh video", "🧱 Muda", "📈 Mura & Muri", "💡 Findings & Copilot",
-        "⚖️ So sánh run", "▶ Chạy pipeline"]
-t = st.tabs(TABS)
-if run_id:
-    with t[0]:
-        tab_overview(run_id, trial)
-    with t[1]:
-        tab_video(run_id, trial)
-    with t[2]:
-        tab_video_compare(run_id, trial)
-    with t[3]:
-        tab_muda(run_id, trial)
-    with t[4]:
-        tab_mura_muri(run_id, trial)
-    with t[5]:
-        tab_findings(run_id, trial)
-else:
-    for i in range(6):
-        with t[i]:
-            st.info("Chưa có run nào — dùng tab **Chạy pipeline** hoặc `bash run_all.sh`.")
-with t[6]:
-    tab_compare()
-with t[7]:
-    tab_run()
+def block_video(p: dict) -> None:
+    st.subheader("🎞 Video có nhãn vẽ lại")
+    pid = p["id"]
+    path, meta = da.demo_video(pid)
+    if path is None:
+        st.info("Chưa render video overlay.")
+        if st.button("🎞 Render video", disabled=bool(da.current_job()), key="render_btn"):
+            ok, msg = da.start_job(pid, only="render")
+            (st.toast if ok else st.warning)(msg)
+            st.rerun()
+        return
+    st.video(str(path))
+    src = (meta or {}).get("source")
+    st.caption(f"Nguồn nhãn trên video: **{da.source_label(src)}** · {da.source_badge(src) if src else ''}")
+    if demo_on() and p.get("labels_available") and src != "oracle":
+        st.warning("Demo mode cần bản overlay theo nhãn chuẩn — bản hiện tại dùng nhãn dự đoán.")
+        if st.button("🎞 Render lại theo nhãn chuẩn", disabled=bool(da.current_job()), key="rerender_btn"):
+            ok, msg = da.start_job(pid, only="render")
+            (st.toast if ok else st.warning)(msg)
+            st.rerun()
+
+
+def finding_card(c: dict, explained: bool = True) -> None:
+    with st.container(border=True):
+        sev = {"high": "🔴", "med": "🟠", "low": "🟡", "info": "🔵"}.get(c["severity"], "⚪")
+        st.markdown(f"{sev} **{c['id']} · {c['problem']}** · {c['rule']} · {c['severity']}")
+        st.caption(f"Bằng chứng: {c.get('metric')} = {fmt(c.get('value'), ' ' + (c.get('unit') or ''))}"
+                   f" · ảnh hưởng {fmt(c.get('impact'), ' s/chu kỳ')}"
+                   + (f" · video {', '.join(c['trials'])}" if c.get("trials") else ""))
+        if not explained:
+            return
+        if not c.get("observation"):
+            st.caption("_Chưa có diễn giải LLM._")
+        else:
+            st.markdown(f"**Quan sát:** {c['observation']}  \n**Giả thuyết:** {c.get('hypothesis') or '—'}  \n"
+                        f"**Đề xuất:** {c.get('recommendation') or '—'} · `ECRS: {c.get('ecrs') or '—'}`  \n"
+                        f"**Đo lại:** {c.get('remeasure') or '—'}")
+        badge = {"passed": "✅ validator passed", "failed_after_retry": "❌ validator fail sau retry",
+                 "parse_failed": "❌ không parse được"}.get(c.get("validation") or "", "")
+        st.caption(f"Nguồn: {' '.join(c.get('sources') or []) or '—'}" + (f" · {badge}" if badge else ""))
+
+
+def block_brain(v: dict) -> None:
+    st.subheader("🧠 Kaizen Brain")
+    st.caption(f"Nguồn bước: {da.source_badge(v.get('source'))} · run `{v['run_id']}`")
+    if v["steps"]:
+        thr = v["threshold"]
+        st.markdown(f"**Bảng bước** — ngưỡng lệch ±{fmt(thr['value'])}% {thr['label']} (vượt ngưỡng tô đỏ)")
+        df = pd.DataFrame(v["steps"])
+        over = df.pop("Vượt ngưỡng")
+        sty = df.style.apply(lambda r: ["color:#b42318;font-weight:700" if over[r.name] and c == "Lệch %" else ""
+                                        for c in df.columns], axis=1).format(
+            {"Thời lượng (s)": lambda x: fmt(x, nd=2), "TG chuẩn (s)": lambda x: fmt(x),
+             "Lệch %": lambda x: "—" if x is None or pd.isna(x) else f"{x:+.1f}"})
+        st.dataframe(sty, hide_index=True, width="stretch")
+    else:
+        st.info("Run chưa có bảng bước cho video này.")
+    ex = v.get("explain") or {}
+    if ex.get("citation_note"):
+        st.caption(f"⚠️ {ex['citation_note']}")
+    if ex.get("mode") == "dry-run":
+        st.caption("⚠️ Giải thích đang ở chế độ dry-run (văn bản giả — thiếu API key).")
+    st.markdown(f"**Findings** ({len(v['findings'])})")
+    if not v["findings"]:
+        st.caption("Không có finding nào vượt ngưỡng.")
+    for c in v["findings"]:
+        finding_card(c)
+    if v.get("notes"):
+        with st.expander("Ghi chú rule"):
+            for n in v["notes"]:
+                st.caption(n)
+    with st.expander("📄 Tài liệu đã dùng"):
+        if v["references"]:
+            st.dataframe(pd.DataFrame([{"Mã ngắn": r["label"], "Tài liệu": r["title"], "Trang": r["page"] or "—",
+                                        "chunk_id": ", ".join(r["chunk_ids"]) or "—", "Dùng ở": ", ".join(r["uses"])}
+                                       for r in v["references"]]), hide_index=True, width="stretch")
+        else:
+            st.caption("Chưa dùng trích dẫn tài liệu nào.")
+
+
+def block_benchmark(pid: str) -> None:
+    b = da.benchmark(pid)
+    with st.expander("📏 Benchmark", expanded=False):
+        st.markdown(b["model_line"])
+        if not b.get("labels_available"):
+            st.info("Không có nhãn chuẩn — chỉ hiển thị chỉ số vận hành.")
+        if b["rows"]:
+            st.dataframe(pd.DataFrame([{"Chỉ số": r["label"], "Giá trị": fmt(r["value"], " " + r["unit"] if r["unit"] else "", 3),
+                                        "Ghi chú": r["note"] or ""} for r in b["rows"]]),
+                         hide_index=True, width="stretch")
+        else:
+            st.caption("Chưa có run nào.")
+        st.caption(b["note"])
+
+
+@safe("chi tiết dự án")
+def page_project() -> None:
+    projs = da.list_projects()
+    if not projs:
+        st.title("🎬 Chi tiết dự án")
+        st.info("Chưa có dự án nào — vào trang 📁 Dự án để thêm video.")
+        return
+    ids = [p["id"] for p in projs]
+    names = {p["id"]: p.get("name") or p["id"] for p in projs}
+    if st.session_state.get("project") not in ids:
+        st.session_state["project"] = ids[0]
+    pid = st.session_state["project"]
+    p = da.get_project(pid)
+    if p is None:
+        st.warning(f"Không đọc được dự án {pid}.")
+        return
+    top = st.columns([4, 2])
+    top[0].title(f"🎬 Dự án: {p.get('name') or pid}")
+    top[1].selectbox("Đổi dự án", ids, index=ids.index(pid), format_func=lambda x: names[x], key="proj_pick",
+                     on_change=lambda: st.session_state.update(project=st.session_state["proj_pick"]))
+    kind = {"ha4m": "trial HA4M", "video": "video upload", "frames": "thư mục ảnh", "adopted": "run cũ"}.get(
+        p.get("kind"), p.get("kind"))
+    st.caption(f"{kind} · `{p['id']}` · {'có nhãn chuẩn' if p.get('labels_available') else 'không có nhãn chuẩn'}"
+               + (f" · chỉ xử lý {fmt(p['max_seconds'])} s đầu" if p.get("max_seconds") else ""))
+    block_run(p)
+    if p.get("status") == "running":
+        return
+    if demo_on() and da.demo_ready(pid)[0] and pid not in st.session_state.get("revealed", []):
+        st.caption("Bấm **▶ Chạy full luồng** để xem kết quả.")
+        return
+    st.divider()
+    block_video(p)
+    st.divider()
+    v = da.project_view(pid)
+    if v is None:
+        st.info("Chưa có kết quả — bấm **▶ Chạy full luồng**.")
+        return
+    block_brain(v)
+    block_benchmark(pid)
+    rp = da.report_path(pid)
+    if rp:
+        st.download_button("⬇ Tải report.md", rp.read_bytes(), file_name=f"report_{pid}.md", mime="text/markdown")
+
+
+# ============================ Trang 3 — Tài liệu ============================
+@safe("trang tài liệu")
+def page_docs() -> None:
+    st.title("📚 Tài liệu (RAG)")
+    st.caption(f"Store: `{da.rag_store_path()}` — work instruction / guideline dùng để trích dẫn TG chuẩn, ngưỡng, khuyến nghị.")
+    up = st.file_uploader("Tải tài liệu (PDF / DOCX / MD / TXT)", type=["pdf", "docx", "md", "txt"])
+    if st.button("📥 Ingest tài liệu", type="primary", disabled=up is None):
+        with st.spinner("Đang đọc, chia chunk và embed…"):
+            try:
+                st.session_state["last_ingest"] = da.rag_ingest(up.getvalue(), up.name)
+            except Exception as e:  # noqa: BLE001
+                st.session_state["last_ingest"] = {"error": str(e)}
+    r = st.session_state.get("last_ingest")
+    if r:
+        if r.get("error"):
+            st.error(f"Không ingest được: {r['error']}")
+        else:
+            st.success(f"{'Đã có sẵn' if r.get('already_present') else 'Đã ingest'} **{r['title']}** (`{r['doc_id']}`): "
+                       f"{r['pages']} trang, {r['chunks']} chunk"
+                       + (f" · trang cần OCR: {r['needs_ocr_pages']}" if r.get("needs_ocr_pages") else ""))
+    docs = da.rag_documents()
+    st.subheader("Tài liệu đã ingest")
+    if not docs:
+        st.info("Store rỗng — report sẽ trích dẫn KB-xx tĩnh cho tới khi có tài liệu.")
+    else:
+        st.dataframe(pd.DataFrame([{"Tên": d.get("title"), "File": d.get("filename"), "Trang": d.get("pages"),
+                                    "Số chunk": d.get("chunks"), "Ngày": (d.get("ingested_at") or "").replace("T", " "),
+                                    "doc_id": d.get("doc_id")} for d in docs]), hide_index=True, width="stretch")
+    st.subheader("Thử truy vấn")
+    q = st.text_input("Câu hỏi", placeholder="vd: tư thế cổ tay khi ấn vòng bi")
+    if st.button("🔎 Tìm", disabled=not q or not docs):
+        try:
+            st.session_state["last_query"] = (q, da.rag_query(q, 4))
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Truy vấn lỗi: {e}")
+    lq = st.session_state.get("last_query")
+    if lq:
+        st.caption(f"Top-4 cho “{lq[0]}”")
+        for i, h in enumerate(lq[1], 1):
+            with st.container(border=True):
+                st.markdown(f"**{i}. {h['label']}** · {h['title']} · trang {h['page']} · score {h['score']:.3f}")
+                st.caption(f"{h['section']}" if h.get("section") else "")
+                st.markdown(f"> {h['excerpt']}")
+                with st.expander(f"Toàn văn `{h['chunk_id']}`"):
+                    st.text(h["text"])
+
+
+# ============================ Trang 4 — So sánh 3M ============================
+@safe("so sánh 3M")
+def page_3m() -> None:
+    st.title("📊 So sánh 3M nhiều video")
+    aggs = da.list_aggregates()
+    ids = [a["agg_id"] for a in aggs]
+    cur = st.session_state.get("agg_id")
+    if aggs:
+        lab = {a["agg_id"]: f"{a['agg_id']} · {a['n_videos']} video · {', '.join(a['projects'])}"
+               + (" · 📝" if a["has_review"] else "") for a in aggs}
+        idx = ids.index(cur) if cur in ids else 0
+        st.selectbox("Phép tính đã lưu", ids, index=idx, format_func=lambda x: lab[x], key="agg_pick",
+                     on_change=lambda: st.session_state.update(agg_id=st.session_state["agg_pick"]))
+        cur = cur if cur in ids else ids[0]
+    if not cur:
+        st.info("Chưa có phép tính nào — vào 📁 Dự án, chọn ≥ 2 video đã chạy xong rồi bấm **📊 Tính 3M**.")
+        return
+    agg = da.load_aggregate(cur)
+    if agg is None:
+        st.warning(f"Không mở được aggregate {cur}.")
+        return
+    names = {x["project_id"]: x["name"] for x in agg.projects}
+    st.markdown("**Video trong phép tính**")
+    st.dataframe(pd.DataFrame([{"Video": x["name"], "Mã": x["project_id"], "Nguồn bước": da.source_badge(x["source"]),
+                                "Run": x["run_id"]} for x in agg.projects]), hide_index=True, width="stretch")
+    for s in agg.skipped:
+        st.caption(f"⏭ Bỏ qua {s['project_id']}: {s['reason']}")
+
+    st.subheader("Mura — biến động giữa các video")
+    ct = agg.mura["cycle_time"]
+    c = st.columns(4)
+    c[0].metric("CV cycle time", fmt(ct.get("cv"), nd=3))
+    c[1].metric("Cycle time trung bình", fmt(ct.get("mean"), " s"))
+    c[2].metric("Độ lệch chuẩn", fmt(ct.get("std"), " s"))
+    c[3].metric("Số video", ct.get("n"))
+    st.caption(agg.mura["definition"])
+    st.plotly_chart(charts.cycle_bar(agg.muda["rows"], names), width="stretch")
+    sdf = pd.DataFrame([{"Bước": s["step_id"], "Tên": s["name"], "n": s["n"], "Mean (s)": s.get("mean"),
+                         "Std (s)": s.get("std"), "CV": s.get("cv"), "_max": s.get("is_max")} for s in agg.mura["steps_cv"]])
+    if not sdf.empty:
+        mx = sdf.pop("_max")
+        st.markdown("**CV theo bước** (cao nhất tô đỏ)")
+        st.dataframe(sdf.style.apply(lambda r: ["background-color:#fbdada;color:#8c1d1d;font-weight:700" if mx[r.name]
+                                                else "" for _ in r], axis=1).format(
+            {"Mean (s)": lambda x: fmt(x, nd=2), "Std (s)": lambda x: fmt(x, nd=2), "CV": lambda x: fmt(x, nd=3)}),
+            hide_index=True, width="stretch")
+
+    st.subheader("Muda — so sánh thao tác")
+    st.plotly_chart(charts.yamazumi(agg.yamazumi, names, da.color_of_step), width="stretch")
+    mu = agg.muda
+    cols = list(mu["labels"])
+    st.dataframe(pd.DataFrame([{"Video": names.get(r["project_id"], r["project_id"]) + (" ⭐ tham chiếu" if r["is_reference"] else ""),
+                                **{f"{mu['labels'][k]} ({mu['units'].get(k, '')})": fmt(r[k], nd=1) for k in cols},
+                                "Δ cycle vs tham chiếu (s)": fmt(r["delta_vs_ref_s"], nd=1)} for r in mu["rows"]]),
+                 hide_index=True, width="stretch")
+    st.caption("Tham chiếu = video có cycle time nhỏ nhất.")
+
+    st.subheader("Muri — tư thế cổ tay (gộp)")
+    mrows = agg.muri["rows"]
+    mdf = pd.DataFrame([{"Video": names.get(r["project_id"], r["project_id"]), "Tay": "trái" if r["hand"] == "left" else "phải",
+                         "% frame đo được": r["coverage_pct"], "Góc trung vị (°)": r["median_angle_deg"],
+                         "% thời gian lệch": r["dev_gt_thr_pct"], "P90 lệch (°)": r["dev_p90_deg"]} for r in mrows])
+    low = [r["low_coverage"] for r in mrows]
+    if not mdf.empty:
+        st.dataframe(mdf.style.apply(lambda r: ["opacity:.45;color:#8d8c86" if low[r.name] else "" for _ in r], axis=1)
+                     .format(lambda x: fmt(x)), hide_index=True, width="stretch")
+    st.caption(f"{agg.muri['note']} · dòng mờ: độ phủ < {fmt(agg.muri['coverage_low_pct'])}% (kém tin cậy).")
+
+    st.subheader("Findings tổng hợp (R1 / R6)")
+    for r in agg.rules:
+        if not r["ran"]:
+            st.markdown(f'<div class="kz-muted">⏸ <b>{r["rule"]}</b> — bỏ qua: {r["reason"]}<br>'
+                        f'<small>{r["description"]}</small></div>', unsafe_allow_html=True)
+        elif not r["fired"]:
+            st.markdown(f"✓ **{r['rule']}** đã chạy — không video nào vượt ngưỡng.")
+    for c in da.aggregate_cards(agg):
+        finding_card(c, explained=False)
+    for n in (agg.findings or {}).get("notes", []):
+        if not n.startswith(("R1 bỏ qua", "R6 bỏ qua")):
+            st.caption(f"ℹ️ {n}")
+
+    st.subheader("📝 Đánh giá của người xem")
+    note = st.text_area("Ghi chú", value=(agg.review or {}).get("note") or "", key=f"review_{cur}",
+                        placeholder="Nhận định, quyết định cải tiến, điểm cần kiểm chứng…")
+    if st.button("💾 Lưu ghi chú đánh giá", type="primary"):
+        da.save_review(cur, note)
+        st.success("Đã lưu vào aggregate.json.")
+    if (agg.review or {}).get("updated_at"):
+        st.caption(f"Lưu lần cuối: {agg.review['updated_at'].replace('T', ' ')}")
+
+
+# ============================ main ============================
+page = sidebar()
+if demo_on():
+    st.markdown(f'<div class="kz-demo-badge">{DEMO_BADGE}</div>', unsafe_allow_html=True)
+{P_HOME: page_home, P_PROJ: page_project, P_DOCS: page_docs, P_3M: page_3m}[page]()

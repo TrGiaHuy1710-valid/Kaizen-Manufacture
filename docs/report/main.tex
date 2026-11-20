@@ -1,0 +1,127 @@
+% =====================================================================
+%  AI Kaizen Copilot — Motion Analyzer · Báo cáo môn Học máy nâng cao (1 cột)
+%  Biên dịch:  cd docs/report && latexmk        (XeLaTeX, xem latexmkrc) → build/main.pdf
+%  Ảnh: figures/*.png · Sơ đồ TikZ: figures/*.tex · Tài liệu tham khảo: references.bib
+%  Ô cần bổ sung đánh dấu \todo{...} (chữ đỏ) và \tbd (dấu ? đỏ trong bảng).
+% =====================================================================
+\documentclass[12pt,a4paper]{article}
+
+% ---------- Thông tin bìa (sửa ở đây) ----------
+\newcommand{\truong}{TRƯỜNG ĐẠI HỌC PHENIKAA}
+\newcommand{\khoa}{}                               % vd: KHOA CÔNG NGHỆ THÔNG TIN — để trống thì không in
+\newcommand{\monhoc}{HỌC MÁY NÂNG CAO}
+\newcommand{\mamonhoc}{\todo{bổ sung}}
+\newcommand{\giangvien}{PGS.TS Phạm Tiến Lâm}
+\newcommand{\detai}{AI Kaizen Copilot: Định lượng Muda--Mura--Muri\\ từ video lắp ráp với giải thích LLM có kiểm chứng}
+\newcommand{\noithoigian}{Hà Nội, tháng 11 năm 2026}
+
+% ---------- Trang + font + tiếng Việt (XeLaTeX) ----------
+\usepackage[a4paper,left=3cm,right=2cm,top=2.5cm,bottom=2.5cm]{geometry}
+\usepackage{fontspec}
+\usepackage[vietnamese,english]{babel}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{TeX Gyre Cursor}[Scale=0.95]
+\babelprovide[main,import]{vietnamese}
+\AtBeginDocument{\renewcommand{\figurename}{Hình}\renewcommand{\tablename}{Bảng}%
+  \renewcommand{\abstractname}{Abstract}\renewcommand{\refname}{References}%
+  \renewcommand{\contentsname}{Mục lục}}
+\usepackage{setspace}
+\setstretch{1.25}
+\setlength{\parskip}{3pt}
+\setlength{\emergencystretch}{3em}               % tránh tràn lề khi có tên file / mã dài
+
+% ---------- Gói chung ----------
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs,multirow,tabularx,array}
+\usepackage{adjustbox}
+\usepackage[table]{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,shapes.geometric}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{float}
+\usepackage{fancyvrb}
+\usepackage{url}
+\usepackage{xurl}                                  % ngắt dòng URL dài trong References
+\usepackage[hidelinks]{hyperref}
+\urlstyle{same}
+\usepackage{cleveref}
+
+% ---------- Macro ----------
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
+\newcommand{\tbd}{\textcolor{red}{\textbf{?}}}   % ô bảng chờ điền số
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\muda}{\textit{Muda}}
+\newcommand{\mura}{\textit{Mura}}
+\newcommand{\muri}{\textit{Muri}}
+\newcommand{\Fone}{F1@IoU0.5}
+\newenvironment{IEEEkeywords}{\par\smallskip\noindent\textbf{Từ khoá:}~}{\par}
+\renewcommand{\algorithmicrequire}{\textbf{Vào:}}
+\renewcommand{\algorithmicensure}{\textbf{Ra:}}
+\crefname{figure}{Hình}{Hình}
+\crefname{table}{Bảng}{Bảng}
+\crefname{section}{Mục}{Mục}
+\crefname{subsection}{Mục}{Mục}
+\crefname{equation}{}{}
+\crefname{algorithm}{Thuật toán}{Thuật toán}
+
+\begin{document}
+
+% ============================== BÌA ==============================
+\begin{titlepage}
+  \centering
+  {\large\bfseries \truong\par}
+  \ifx\khoa\empty\else{\large\bfseries \khoa\par}\fi
+  \vspace{0.3cm}\rule{0.6\textwidth}{0.6pt}\par
+  \vspace{1.2cm}
+  \IfFileExists{figures/logo.png}{\includegraphics[height=3.5cm]{logo.png}\par\vspace{1cm}}{\vspace{2cm}}
+  {\Large\bfseries BÁO CÁO MÔN HỌC\par}
+  \vspace{0.4cm}
+  {\LARGE\bfseries \monhoc\par}
+  \vspace{0.3cm}
+  {\large Mã môn học: \mamonhoc\par}
+  \vspace{1.5cm}
+  {\large\bfseries ĐỀ TÀI\par}
+  \vspace{0.3cm}
+  {\Large\bfseries \detai\par}
+  \vfill
+  \begin{tabular}{@{}ll@{}}
+    \textbf{Giảng viên hướng dẫn:} & \giangvien \\[0.4cm]
+    \textbf{Sinh viên thực hiện:}  & \begin{tabular}[t]{@{}ll@{}}
+                                       Trịnh Gia Huy (Nhóm trưởng) & MSSV: \todo{} \\
+                                       Nguyễn Thị Nhung            & MSSV: \todo{} \\
+                                       Hoàng Tiến Đạt              & MSSV: \todo{} \\
+                                     \end{tabular}
+  \end{tabular}
+  \vfill
+  {\large \noithoigian\par}
+\end{titlepage}
+
+% ============================== TÓM TẮT + MỤC LỤC ==============================
+\pagenumbering{roman}
+\setcounter{page}{2}
+\addcontentsline{toc}{section}{Abstract}
+\input{sections/00_abstract}
+\clearpage
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+% ============================== NỘI DUNG ==============================
+\input{sections/01_introduction}
+\input{sections/02_related_work}
+\input{sections/03_method}
+\input{sections/04_implementation}
+\input{sections/05_experiments}
+\input{sections/06_conclusion}
+
+\clearpage
+\addcontentsline{toc}{section}{References}
+\bibliographystyle{IEEEtran}
+{\raggedright\bibliography{references}\par}
+
+\end{document}
