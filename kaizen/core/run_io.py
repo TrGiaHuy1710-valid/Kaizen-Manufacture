@@ -64,7 +64,7 @@ class RunContext:
         """Nội dung manifest ({} nếu chưa có/hỏng)."""
         try:
             return json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError):
             return {}
 
     @property
@@ -187,7 +187,7 @@ def list_runs() -> list[dict]:
     """Manifest của mọi run (theo tên thư mục)."""
     RUNS = runs_dir()  # noqa: N806
     out = []
-    for d in sorted(RUNS.glob("*/")) if RUNS.exists() else []:
+    for d in sorted(x for x in RUNS.glob("*") if x.is_dir()) if RUNS.exists() else []:   # py3.10: "*/" khớp cả file
         m = RunContext(d.name, d).manifest
         if m:
             out.append(m)

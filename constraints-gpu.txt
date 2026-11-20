@@ -1,0 +1,8 @@
+# Giữ nguyên torch CUDA có sẵn khi cài requirements vào env GPU dùng chung (courier310):
+#   pip install -r requirements.txt -c constraints-gpu.txt
+# Env khác: đổi theo  python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__)"
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+# courier310 đã có opencv-python 5.0.0.93 → contrib (mediapipe/rtmlib cần) phải CÙNG bản, nếu không 2 gói ghi đè lẫn nhau cv2/
+opencv-contrib-python==5.0.0.93
+opencv-python==5.0.0.93

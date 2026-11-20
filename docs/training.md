@@ -29,14 +29,18 @@ zip HA4M ──A1──▶ keypoints .npz + Labels.txt ──A3 train──▶ m
 ### A0. Môi trường
 
 ```bash
-conda activate kaizen-py311        # python 3.11, torch 2.14.1+cpu, tensorboard 2.21 (đã cài)
+conda activate courier310          # GPU: python 3.10, torch 2.6.0+cu124 (env dùng chung với dự án courier)
 cd /storage/huytg/KaizenMotionAnalyzer
-python -m pytest tests/test_train.py -q      # 8 test, ~20 s — kiểm vòng train/ckpt/benchmark/test/resume
+pip install -r requirements.txt -c constraints-gpu.txt   # lần đầu; constraints giữ nguyên torch CUDA + OpenCV của env
+python -c "import torch; print(torch.cuda.is_available())"   # True → --device auto tự chọn cuda
+python -m pytest tests/test_train.py -q      # ~20 s — kiểm vòng train/ckpt/benchmark/test/resume
 ```
 
-- Torch trong env là bản **CPU**, đủ để train MS-TCN (model ~0,68 triệu tham số). GPU Quadro RTX 8000 của máy
-  đang dùng chung (thường 100% util). Muốn dùng GPU thì phải cài torch CUDA, và việc này **thay torch của cả env**:
-  `pip install --index-url https://download.pytorch.org/whl/cu121 torch`, rồi thêm `--device cuda` khi train.
+- **GPU (courier310)**: train MS-TCN nhanh ~4× (2 video) đến ~17× (batch dài) so với CPU 3 luồng. GPU Quadro RTX 8000
+  dùng chung — xem `nvidia-smi` trước khi chạy. Trích keypoint MediaPipe (bước chậm nhất) vẫn chạy CPU ở cả hai env.
+- **CPU (kaizen-py311)**: python 3.11, torch 2.14.1+cpu — vẫn dùng được, đủ cho vài video. Đừng cài torch CUDA đè
+  vào env dùng chung; dùng env đã có sẵn torch CUDA + `constraints-gpu.txt` (`pip --dry-run` trước để chắc
+  không gói nào bị đổi).
 - Máy có 4 lõi CPU và đang dùng chung. `--threads 0` (mặc định) tự chọn số lõi đang rảnh, có khi chỉ còn 1.
   Nếu biết máy rảnh, đặt `--threads 4`.
 
@@ -137,6 +141,7 @@ Siêu tham số (mặc định theo MS-TCN gốc, Farha & Gall 2019):
 | `--epochs` `--patience` `--eval-every` | 100, 20, 2 | early stopping theo val F1@50 |
 | `--ckpt-every` | 10 | chu kỳ lưu checkpoint cho benchmark (0 = tắt) |
 | `--sample-rate` | 2 | train ở 15 fps; khi dự đoán lặp lại nhãn về 30 fps |
+| `--speed-min` `--speed-max` | 1.0, 1.0 (tắt) | augment tốc độ: mỗi epoch co/giãn từng chuỗi train hệ số log-uniform trong khoảng (vận tốc ÷ hệ số). Pilot U001→U002: `0.667 1.5` tốt nhất (xem `outputs/experiments/`) |
 | `--min-seg-s` | 0.5 | hậu xử lý khi suy luận: mảnh bước ngắn hơn bị nhập vào bước kề |
 | `--seed` | 0 | seed cho khởi tạo và thứ tự batch (cả chia val ngẫu nhiên nếu không truyền `--val-subjects`) |
 
@@ -199,6 +204,7 @@ done
 #   --stages 1             SS-TCN: một stage, không tinh chỉnh → baseline có học để so với MS-TCN
 #   --lambda-smooth 0      bỏ loss làm mượt → ảnh hưởng tới Edit/phân mảnh
 #   --sample-rate 1 | 4    độ phân giải thời gian 30 / 7.5 fps
+#   --speed-min 0.667 --speed-max 1.5   augment tốc độ (người thao tác nhanh/chậm khác nhau)
 #   --layers 8 | --channels 32   receptive field / dung lượng model
 python -m kaizen.train.segmenter train --name abl_s1_seed0 --stages 1 --seed 0 \
     --subjects U001,U002,U003,U004,U005,U006,U007,U008,U009,U010 --val-subjects U008 --test-subjects U009,U010
@@ -273,7 +279,7 @@ cổ tay sẽ báo "không đủ điểm". Chỉ giữ model fine-tune nếu bư
 ### B1. Chuẩn bị dữ liệu (env chính, không cần mmpose)
 
 ```bash
-conda activate kaizen-py311
+conda activate courier310   # hoặc kaizen-py311
 python -m kaizen.train.pose prepare --data-root data/ha4m --out data/pose_ft \
     --stride 15 --val-subjects U040,U041 --min-conf 0.5
 # → data/pose_ft/images/{train,val}/*.jpg (crop quanh người), annotations/person_keypoints_{train,val}.json, stats.json
@@ -318,7 +324,7 @@ python ~/mmdeploy/tools/deploy.py ~/mmdeploy/configs/mmpose/pose-detection_simcc
 ### B5. Dùng lại trong pipeline và so với baseline
 
 ```bash
-conda activate kaizen-py311
+conda activate courier310   # hoặc kaizen-py311
 export KAIZEN_POSE_ONNX=models/pose_ft/rtmpose-m_ha4m/onnx/end2end.onnx   # KAIZEN_POSE_INPUT=192x256 (W×H, mặc định)
 python src/01_extract.py --model rtmpose-custom --subjects U040,U041
 python -m kaizen.train.pose eval --pose-model rtmpose-custom --subjects U040,U041 --out outputs/pose_eval_ft.json

@@ -1,5 +1,10 @@
+# Python 3.10–3.11.
+# Env GPU (khuyến nghị cho train): courier310 — py3.10, torch 2.6.0+cu124 có sẵn. Cài kèm constraints để pip KHÔNG thay torch:
+#   conda activate courier310 && pip install -r requirements.txt -c constraints-gpu.txt
+# Env CPU cũ: kaizen-py311 (torch 2.14.1+cpu).
+
 # Core
-numpy<2            # mediapipe một số bản chưa tương thích numpy 2.x
+numpy>=1.24        # mediapipe 1.0.x chạy được numpy 2.x (chỉ bản 0.10 cũ mới cần numpy<2)
 pandas
 scipy
 scikit-learn
@@ -7,9 +12,9 @@ tqdm
 pyarrow
 
 # Pose models
-mediapipe>=0.10.14 # kéo theo opencv-contrib-python, KHÔNG cài thêm opencv-python
+mediapipe==1.0.1   # bản đã test; kéo theo opencv-contrib-python, KHÔNG cài thêm opencv-python
 rtmlib             # RTMPose/RTMW qua ONNX, không cần mmcv
-onnxruntime        # đổi sang onnxruntime-gpu nếu có CUDA
+onnxruntime        # onnxruntime-gpu chỉ cần nếu chạy RTMW trên GPU — không bắt buộc
 
 # Day 2: lọc nhiễu, zone, phân đoạn, chu kỳ
 OneEuroFilter
@@ -34,8 +39,9 @@ python-multipart==0.0.32     # upload file (POST /documents)
 pymupdf==1.28.2              # parse PDF: block + trang + bbox + bảng
 chromadb==1.5.9              # vector store persistent data/rag_store/ (không server)
 sentence-transformers==6.1.0 # embedder local intfloat/multilingual-e5-small
-# torch: bản CPU là đủ cho e5-small và nhẹ hơn nhiều (~200 MB thay vì vài GB CUDA):
-#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+# torch (>= 2.2) KHÔNG liệt kê ở đây để pip không thay bản có sẵn trong env:
+#   GPU: dùng env đã có torch CUDA (courier310 = 2.6.0+cu124; driver 550 → CUDA ≤ 12.4) + constraints-gpu.txt
+#   CPU: pip install --index-url https://download.pytorch.org/whl/cpu torch
 tensorboard==2.21.0          # log train MS-TCN (kaizen.train.segmenter) — tuỳ chọn, thiếu thì bỏ qua log TB
 
 # Hiển thị / dashboard
@@ -44,5 +50,5 @@ plotly
 streamlit          # app/ui.py (dashboard demo)
 imageio-ffmpeg     # tools/render_demo.py: encode H.264 phát được trên trình duyệt
 
-# Dataset OpenPack (tùy chọn)
-openpack-toolkit
+# Dataset OpenPack (tùy chọn, code hiện không import): ép numpy<2 + pandas<2 → sẽ HẠ CẤP env dùng chung.
+# Chỉ cài trong env riêng nếu cần:  pip install openpack-toolkit

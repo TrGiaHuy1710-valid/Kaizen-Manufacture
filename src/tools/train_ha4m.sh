@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Thống kê → trích keypoints còn thiếu → chia split (cố định) → train MS-TCN → test (nếu split có test).
 # Chạy từ repo root trên server:
-#   cd /storage/huytg/KaizenMotionAnalyzer && conda activate kaizen-py311
+#   cd /storage/huytg/KaizenMotionAnalyzer && conda activate courier310   # GPU (hoặc kaizen-py311: CPU)
 #   bash src/tools/train_ha4m.sh                       # split v1, model mstcn_v1
 #   bash src/tools/train_ha4m.sh --split v2 --epochs 150 --threads 4
 #   bash src/tools/train_ha4m.sh --split v2 --strategy trial --val U001_V002   (đối số lạ → chuyển cho `split make`)

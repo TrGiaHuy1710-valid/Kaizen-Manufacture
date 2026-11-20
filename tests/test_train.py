@@ -308,3 +308,107 @@ def test_split_stats_and_strategies(tmp_path, monkeypatch):
     cfg = json.loads(Path("models/segmenter/sp/config.json").read_text())
     assert cfg["train_trials"] == split["train"] and cfg["val_trials"] == split["val"]
     assert cfg["test_trials"] == split["test"] and cfg["split_name"] == "t"
+
+
+def test_crop_to_observed_truncated_video():
+    """Video thiếu ảnh cuối: bỏ bước bị cụt khỏi oracle, cắt pred, frame sau mốc bị bỏ qua; video đủ → giữ nguyên."""
+    import pandas as pd
+    from kaizen.train.segmenter import crop_to_observed
+    cols = ["step_id", "repetition", "name", "start_s", "end_s", "dur_s", "source"]
+    orc = pd.DataFrame([[1, 0, "a", 0.0, 2.0, 2.0, "oracle"], [2, 0, "b", 2.0, 4.0, 2.0, "oracle"],
+                        [3, 0, "c", 4.0, 9.0, 5.0, "oracle"]], columns=cols)
+    pred = pd.DataFrame([[1, 0, "a", 0.0, 2.1, 2.1, "pred"], [2, 0, "b", 2.1, 4.2, 2.1, "pred"],
+                         [3, 0, "c", 4.2, 5.0, 0.8, "pred"]], columns=cols)
+    fps = 10.0
+    t = np.arange(0, 5.0, 1 / fps)                     # chỉ quan sát 5 s, bước 3 kéo tới 9 s
+    gt = ["1.0" if x < 2 else "2.0" if x < 4 else "3.0" for x in t]
+    p2, o2, g2, cut, dropped = crop_to_observed(pred, orc, gt, t, fps)
+    assert cut == 4.0 and dropped == ["3.0"]
+    assert list(o2["step_id"]) == [1, 2]
+    assert list(p2["step_id"]) == [1, 2] and p2["end_s"].max() <= 4.0
+    assert all(g == "" for g, x in zip(g2, t) if x >= 4.0) and g2[0] == "1.0"
+    t_full = np.arange(0, 9.0, 1 / fps)
+    p3, o3, g3, cut3, d3 = crop_to_observed(pred, orc, ["1.0"] * len(t_full), t_full, fps)
+    assert cut3 is None and d3 == [] and len(o3) == 3 and len(p3) == 3
+
+
+def test_speed_augment_stretch_and_velocity():
+    """s=2: chuỗi dài gấp đôi, nhãn giữ thứ tự, vận tốc thô giảm một nửa; s=1: giữ nguyên."""
+    from kaizen.train import dataset as ds
+    from kaizen.train.features import feature_dim, feature_names
+    from kaizen.train.segmenter import speed_augment
+    rng = np.random.default_rng(0)
+    D, L = feature_dim(), 40
+    raw = rng.normal(size=(L, D)).astype(np.float32)
+    norm = ds.Normalizer.fit([raw])
+    y = np.repeat(np.arange(4), 10).astype(np.int64)
+    e = ds.Encoded("t", norm(raw), y)
+    same = speed_augment(e, 1.0, norm)
+    assert np.allclose(same.x, e.x, atol=1e-5) and (same.y == y).all()
+    st = speed_augment(e, 2.0, norm)
+    assert len(st.x) == 80 and len(st.y) == 80
+    assert list(dict.fromkeys(st.y.tolist())) == [0, 1, 2, 3]
+    vel = np.array([k.startswith("vel_") for k in feature_names()])
+    back = st.x * norm.std + norm.mean
+    assert np.allclose(back[0, vel], raw[0, vel] / 2.0, atol=1e-4)      # frame 0 trùng frame gốc 0
+
+
+def test_sop_decode_enforces_order_and_repetitions():
+    """Argmax lẫn 2.0/2.1 (cùng tư thế) → giải mã SOP chia đúng thứ tự 1.0 → 2.0 → 2.1, nền tuỳ chọn."""
+    from kaizen.train.segmenter import sop_decode
+    classes = ["0", "1.0", "2.0", "2.1"]
+    T = 30
+    p = np.full((T, 4), 0.01)
+    p[:3, 0] = 1.0                      # nền
+    p[3:12, 1] = 1.0                    # bước 1
+    p[12:30, 2] = 0.6                   # 2.0 và 2.1 trông giống nhau: argmax toàn 2.0
+    p[12:30, 3] = 0.5
+    logp = np.log(p / p.sum(1, keepdims=True))
+    assert set(logp.argmax(1)[12:]) == {2}
+    path = sop_decode(logp, classes, ["1.0", "2.0", "2.1"], min_len=3)
+    keys = [classes[i] for i in path]
+    order = [k for i, k in enumerate(keys) if i == 0 or keys[i - 1] != k]
+    assert order == ["0", "1.0", "2.0", "2.1"]
+    assert keys[5] == "1.0" and keys[-1] == "2.1"
+    assert min(keys.count(k) for k in ("1.0", "2.0", "2.1")) >= 3
+
+
+def test_segment_speed_augment_per_segment_factors():
+    """Mỗi đoạn nhãn giãn theo hệ số riêng: đoạn 0 ×1, đoạn 1 ×3 → độ dài 10 + 30, thứ tự nhãn giữ nguyên."""
+    from kaizen.train import dataset as ds
+    from kaizen.train.features import feature_dim
+    from kaizen.train.segmenter import segment_speed_augment
+    D = feature_dim()
+    raw = np.random.default_rng(1).normal(size=(20, D)).astype(np.float32)
+    norm = ds.Normalizer.fit([raw])
+    e = ds.Encoded("t", norm(raw), np.repeat([0, 1], 10).astype(np.int64))
+    it = iter([1.0, 3.0])
+    out = segment_speed_augment(e, lambda: next(it), norm)
+    assert len(out.y) == 40 and (out.y[:10] == 0).all() and (out.y[10:] == 1).all()
+
+
+def test_feature_drop_train_predict_and_sop_test(tmp_path, monkeypatch):
+    """--feat-drop hands,abs: model nhận ít cột hơn, lưu feature_cols, suy luận tự cắt cột; --speed-mode segment
+    train được; test --decode sop chạy và ghi decode vào summary."""
+    from kaizen.train import segmenter as sg
+    from kaizen.train.features import feature_dim
+    assert len(sg.feature_columns("")) == feature_dim()
+    assert len(sg.feature_columns("hands")) == feature_dim() - 6 * 7
+    assert len(sg.feature_columns("hands,abs")) == feature_dim() - 6 * 7 - 9 * 2
+    with pytest.raises(ValueError):
+        sg.feature_columns("tay")
+    root, kp = _ha4m(tmp_path, 4)
+    station = _station(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    common = ["--data-root", str(root), "--keypoints-dir", str(kp), "--config", str(station), "--device", "cpu"]
+    hp = ["--stages", "2", "--layers", "3", "--channels", "16", "--sample-rate", "3", "--eval-every", "2",
+          "--ckpt-every", "0", "--threads", "1", "--epochs", "4", "--feat-drop", "hands,abs",
+          "--speed-min", "0.8", "--speed-max", "1.25", "--speed-mode", "segment"]
+    assert sg.main(["train", *common, *hp, "--name", "fd", "--val-subjects", "U902", "--test-subjects", "U903"]) == 0
+    m = Path("models/segmenter/fd")
+    cfg = json.loads((m / "config.json").read_text())
+    assert cfg["feature_dim"] == len(cfg["feature_cols"]) == feature_dim() - 60
+    assert not any(c.startswith("abs_") or "_lh_" in c or "_rh_" in c for c in cfg["feature_cols"])
+    assert sg.main(["test", *common, "--model", str(m), "--decode", "sop"]) == 0
+    s = json.loads((m / "test_sop" / "summary.json").read_text())
+    assert s["decode"] == "sop" and s["summary"]["edit"]["mean"] >= 0

@@ -6,7 +6,7 @@ AI Kaizen Motion Analyzer cho dataset HA4M: video lắp ráp → keypoints → e
 ## Chạy demo
 
 ```bash
-conda activate kaizen-py311 && pip install -r requirements.txt
+conda activate courier310 && pip install -r requirements.txt -c constraints-gpu.txt   # GPU; CPU: kaizen-py311, bỏ -c
 # 1) Chuẩn bị run (lần đầu trích keypoints ~6 phút/video; --dry-run = không cần API key)
 bash run_all.sh --subjects U001 --trials all --oracle --dry-run --tag demo     # số theo nhãn HA4M
 bash run_all.sh --subjects U001 --trials all --dry-run --tag demo              # số theo CV dự đoán (+ sai số vs nhãn)

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import datetime as dt
 import json
 import math
@@ -38,7 +39,7 @@ import pandas as pd
 
 from kaizen.core.config import DEFAULT_CONFIG, DEFAULT_DATA_ROOT, load_config
 from kaizen.train import dataset as ds
-from kaizen.train.features import FEATURE_VERSION, feature_dim, frame_features, load_npz
+from kaizen.train.features import FEATURE_VERSION, feature_dim, feature_names, frame_features, load_npz
 from kaizen.train.metrics import mean_reports, segment_report
 
 TAG = "seg"
@@ -46,7 +47,8 @@ MODELS_DIR = Path("models/segmenter")
 LATEST = MODELS_DIR / "LATEST"
 DEFAULTS = dict(stages=4, layers=10, channels=64, dropout=0.5, lambda_smooth=0.15, lr=5e-4, weight_decay=1e-4,
                 epochs=100, batch_size=4, sample_rate=2, patience=20, eval_every=2, ckpt_every=10, seed=0,
-                min_seg_s=0.5, threads=0)
+                min_seg_s=0.5, threads=0, speed_min=1.0, speed_max=1.0, speed_mode="global",
+                decode="argmax", feat_drop="")
 FRAME_METRICS = ("acc", "edit", "f1@10", "f1@25", "f1@50")
 STEP_METRICS = ("f1_iou05", "mae_step_dur_s", "cycle_time_err_s")
 
@@ -139,6 +141,83 @@ def _batch(items: list[ds.Encoded], device: str):
     return x.to(device), y.to(device), m.to(device)
 
 
+def speed_augment(e: ds.Encoded, s: float, norm: ds.Normalizer) -> ds.Encoded:
+    """Co/giãn chuỗi theo thời gian hệ số s (s > 1 = làm chậm hơn, chuỗi dài hơn) — mô phỏng người thao tác
+    nhanh/chậm khác nhau. Đặc trưng liên tục: nội suy tuyến tính; mask + nhãn: frame gần nhất; vận tốc ÷ s
+    (tính trong không gian thô rồi chuẩn hoá lại, vì x đã z-score)."""
+    L = len(e.x)
+    n = max(2, int(round(L * s)))
+    return _time_warp(e, np.clip(np.arange(n) / s, 0, L - 1), np.full(n, s, np.float32), norm)
+
+
+def segment_speed_augment(e: ds.Encoded, factors, norm: ds.Normalizer) -> ds.Encoded:
+    """Co/giãn TỪNG ĐOẠN nhãn (run liên tiếp cùng lớp) với hệ số riêng — người thật chậm/nhanh không đều giữa các
+    bước (U002: bước 11 chậm 2.8×, bước 7 như U001). factors: callable() → hệ số cho mỗi đoạn."""
+    y = e.y
+    cuts = np.flatnonzero(np.diff(y)) + 1
+    starts = np.concatenate([[0], cuts])
+    ends = np.concatenate([cuts, [len(y)]])
+    pos, fac = [], []
+    for a, b in zip(starts, ends):
+        f = float(factors())
+        n = max(1, int(round((b - a) * f)))
+        pos.append(a + np.arange(n) / f)
+        fac.append(np.full(n, f, np.float32))
+    p = np.clip(np.concatenate(pos), 0, len(y) - 1)
+    return _time_warp(e, p, np.concatenate(fac), norm)
+
+
+def _time_warp(e: ds.Encoded, p: np.ndarray, fac: np.ndarray, norm: ds.Normalizer) -> ds.Encoded:
+    """Lấy mẫu lại chuỗi tại vị trí thực p (theo frame gốc); fac = hệ số giãn tại từng frame mới (chia vận tốc)."""
+    L = len(e.x)
+    i0 = np.floor(p).astype(int)
+    i1 = np.minimum(i0 + 1, L - 1)
+    w = (p - i0)[:, None].astype(np.float32)
+    x = e.x[i0] * (1 - w) + e.x[i1] * w
+    near = np.rint(p).astype(int)
+    names = e.extra.get("names") or feature_names()
+    msk = np.array([k.startswith("mask_") for k in names])
+    vel = np.array([k.startswith("vel_") for k in names])
+    x[:, msk] = e.x[near][:, msk]
+    mu, sd = norm.mean[vel], norm.std[vel]
+    x[:, vel] = ((x[:, vel] * sd + mu) / fac[:, None] - mu) / sd
+    return ds.Encoded(e.stem, x.astype(np.float32), e.y[near], e.extra)
+
+
+def _draw_speed(hp: dict) -> float:
+    lo, hi = float(hp.get("speed_min", 1.0)), float(hp.get("speed_max", 1.0))
+    if hi <= lo:
+        return lo
+    return float(np.exp(np.random.uniform(np.log(lo), np.log(hi))))   # log-uniform: 0.67 và 1.5 cân xứng
+
+
+FEAT_GROUPS = ("hands", "abs", "rel", "vel", "mask")
+
+
+def feature_columns(feat_drop: str = "") -> list[str]:
+    """Tên cột đặc trưng giữ lại sau khi bỏ các nhóm trong feat_drop (phẩy): hands = điểm ngón tay lh_/rh_ (MediaPipe
+    Hand hỏng khi đeo găng), abs = toạ độ tuyệt đối (lệch khi camera/chỗ đứng đổi), rel, vel, mask."""
+    drop = {x.strip() for x in str(feat_drop).split(",") if x.strip()}
+    bad = drop - set(FEAT_GROUPS)
+    if bad:
+        raise ValueError(f"feat_drop không hợp lệ: {sorted(bad)} (chọn trong {FEAT_GROUPS})")
+    keep = []
+    for n in feature_names():
+        kind, joint = n.split("_", 1)
+        is_hand = joint.startswith(("lh_", "rh_"))
+        if ("hands" in drop and is_hand) or kind in drop:
+            continue
+        keep.append(n)
+    if not keep:
+        raise ValueError("feat_drop bỏ hết đặc trưng")
+    return keep
+
+
+def _col_index(names: list[str]) -> np.ndarray:
+    allc = {n: i for i, n in enumerate(feature_names())}
+    return np.array([allc[n] for n in names])
+
+
 def build_model(hp: dict, dim_in: int, n_classes: int):
     from kaizen.train.mstcn import MSTCN
     return MSTCN(dim_in, n_classes, hp["stages"], hp["layers"], hp["channels"], hp["dropout"])
@@ -146,11 +225,81 @@ def build_model(hp: dict, dim_in: int, n_classes: int):
 
 def _predict_encoded(model, enc: ds.Encoded, device: str) -> np.ndarray:
     """Lớp dự đoán theo frame (ở độ phân giải đã lấy mẫu)."""
+    return _logprobs_encoded(model, enc, device).argmax(1)
+
+
+def _logprobs_encoded(model, enc: ds.Encoded, device: str) -> np.ndarray:
+    """log-softmax stage cuối, (T', C)."""
     torch = _torch()
     model.eval()
     with torch.no_grad():
         x, _, m = _batch([enc], device)
-        return model(x, m)[-1, 0].argmax(0).cpu().numpy()[: len(enc.x)]
+        return torch.log_softmax(model(x, m)[-1, 0], 0).T.cpu().numpy()[: len(enc.x)]
+
+
+def sop_plan(classes: list[str], station: dict | None = None) -> list[str]:
+    """Thứ tự bước chuẩn (SOP) = khoá 'bước.lần' theo station.yaml, chỉ giữ lớp model có; không có station → theo số."""
+    plan = [f"{int(st['id'])}.{r}" for st in (station or {}).get("steps", []) for r in range(int(st.get("reps", 1)))]
+    plan = [k for k in plan if k in classes] or [k for k in ds.sort_keys(classes) if k != "0"]
+    return plan
+
+
+def sop_decode(logp: np.ndarray, classes: list[str], plan: list[str], min_len: int = 1) -> np.ndarray:
+    """Giải mã có ràng buộc thứ tự SOP (Viterbi / forced alignment): tìm cách chia chuỗi thành đúng các bước của plan
+    THEO THỨ TỰ, mỗi bước ≥ min_len frame, nền '0' tuỳ chọn ở đầu/cuối/giữa hai bước, cực đại tổng log-prob.
+    Lần lặp (2.0/2.1/2.2) vì vậy được phân biệt bằng thứ tự thay vì hình dáng. Trả chỉ số lớp theo frame.
+    Giả định người làm ĐÚNG thứ tự SOP — sai thứ tự/bỏ bước sẽ bị che (dùng argmax để phát hiện lệch SOP)."""
+    T = len(logp)
+    idx = {k: i for i, k in enumerate(classes)}
+    bg = idx.get("0")
+    segs = []                                       # (lớp, độ dài tối thiểu, tuỳ chọn?)
+    for k in plan:
+        if bg is not None:
+            segs.append((bg, 1, True))
+        segs.append((idx[k], max(1, int(min_len)), False))
+    if bg is not None:
+        segs.append((bg, 1, True))
+    need = sum(m for _, m, opt in segs if not opt)
+    if T < need:                                    # chuỗi quá ngắn để chứa đủ bước → co min_len
+        scale = max(1, T // max(1, len(plan)))
+        segs = [(c, min(m, scale), o) for c, m, o in segs]
+    st_cls, st_last, st_first_of, seg_first = [], [], [], []
+    for si, (c, m, _) in enumerate(segs):
+        seg_first.append(len(st_cls))
+        for j in range(m):
+            st_cls.append(c)
+            st_last.append(j == m - 1)
+    S = len(st_cls)
+    st_cls, st_last = np.array(st_cls), np.array(st_last)
+    seg_last = [seg_first[i] + segs[i][1] - 1 for i in range(len(segs))]
+    skip_src = np.full(S, -1)                       # bỏ qua đoạn nền tuỳ chọn: cuối đoạn i → đầu đoạn i+2
+    for i in range(len(segs) - 2):
+        if segs[i + 1][2]:
+            skip_src[seg_first[i + 2]] = seg_last[i]
+    NEG = -1e18
+    score = np.full(S, NEG)
+    score[seg_first[0]] = 0.0
+    if segs[0][2] and len(segs) > 1:
+        score[seg_first[1]] = 0.0
+    score = score + logp[0, st_cls]
+    back = np.zeros((T, S), np.int8)                # 0 ở lại, 1 từ trạng thái trước, 2 nhảy qua nền
+    has_skip = skip_src >= 0
+    for t in range(1, T):
+        stay = np.where(st_last, score, NEG)
+        prev = np.concatenate([[NEG], score[:-1]])
+        skip = np.where(has_skip, score[np.maximum(skip_src, 0)], NEG)
+        cand = np.stack([stay, prev, skip])
+        b = cand.argmax(0)
+        score = cand[b, np.arange(S)] + logp[t, st_cls]
+        back[t] = b
+    ends = [seg_last[-1]] + ([seg_last[-2]] if segs[-1][2] and len(segs) > 1 else [])
+    s = max(ends, key=lambda j: score[j])
+    path = np.empty(T, np.int64)
+    for t in range(T - 1, -1, -1):
+        path[t] = st_cls[s]
+        b = back[t, s]
+        s = s if b == 0 else s - 1 if b == 1 else skip_src[s]
+    return path
 
 
 def _eval_split(model, encs: list[ds.Encoded], device: str, lam: float) -> dict:
@@ -215,6 +364,11 @@ def train_model(train: list[ds.Trial], val: list[ds.Trial], hp: dict, device: st
     n_threads = set_threads(hp.get("threads", 0)) if device == "cpu" else None
     last_path = ckpt_dir / "last.pt" if ckpt_dir else None
     state = None
+    feat_names = feature_columns(hp.get("feat_drop", ""))
+    if len(feat_names) != feature_dim():
+        cols = _col_index(feat_names)
+        train = [dataclasses.replace(t, feats=t.feats[:, cols]) for t in train]
+        val = [dataclasses.replace(t, feats=t.feats[:, cols]) for t in val]
     if resume:
         if not last_path or not last_path.exists():
             raise FileNotFoundError(f"không có checkpoint để resume: {last_path}")
@@ -230,10 +384,13 @@ def train_model(train: list[ds.Trial], val: list[ds.Trial], hp: dict, device: st
     sr = hp["sample_rate"]
     tr = [ds.encode(t, classes, norm, sr) for t in train]
     va = [ds.encode(t, classes, norm, sr) for t in val]
-    model = build_model(hp, feature_dim(), len(classes)).to(device)
+    for e in tr + va:
+        e.extra["names"] = feat_names
+    model = build_model(hp, len(feat_names), len(classes)).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=hp["lr"], weight_decay=hp["weight_decay"])
     n_params = sum(p.numel() for p in model.parameters())
-    cfg_base = {"version": 1, "arch": "mstcn", "feature_version": FEATURE_VERSION, "feature_dim": feature_dim(),
+    cfg_base = {"version": 1, "arch": "mstcn", "feature_version": FEATURE_VERSION, "feature_dim": len(feat_names),
+                "feature_cols": feat_names,
                 "classes": classes, "hparams": hp, "normalizer": norm.to_json(), "n_params": n_params,
                 "train_trials": [t.stem for t in train], "val_trials": [t.stem for t in val],
                 "train_subjects": sorted({t.subject for t in train}), "val_subjects": sorted({t.subject for t in val}),
@@ -267,7 +424,13 @@ def train_model(train: list[ds.Trial], val: list[ds.Trial], hp: dict, device: st
         tot = ce = sm = 0.0
         nb = correct = counted = 0
         for i in range(0, len(order), hp["batch_size"]):
-            x, y, m = _batch([tr[j] for j in order[i:i + hp["batch_size"]]], device)
+            items = [tr[j] for j in order[i:i + hp["batch_size"]]]
+            if hp.get("speed_max", 1.0) > hp.get("speed_min", 1.0) or hp.get("speed_min", 1.0) != 1.0:
+                if hp.get("speed_mode", "global") == "segment":
+                    items = [segment_speed_augment(e, lambda: _draw_speed(hp), norm) for e in items]
+                else:
+                    items = [speed_augment(e, _draw_speed(hp), norm) for e in items]
+            x, y, m = _batch(items, device)
             out = model(x, m)
             loss, parts = mstcn_loss(out, y, m, hp["lambda_smooth"], return_parts=True)
             opt.zero_grad()
@@ -434,21 +597,35 @@ def _smooth(keys: list[str], t: np.ndarray, fps: float, min_seg_s: float, bg: st
     return [tuple(sg) for sg in segs]
 
 
-def predict_feats(model, cfg: dict, feats: np.ndarray, device: str = "cpu") -> list[str]:
-    """Lớp ('0', '2.1', …) cho TỪNG frame từ đặc trưng (T, D) (dự đoán ở 1/sample_rate rồi lặp lại)."""
+def predict_feats(model, cfg: dict, feats: np.ndarray, device: str = "cpu", decode: str | None = None,
+                  station: dict | None = None) -> list[str]:
+    """Lớp ('0', '2.1', …) cho TỪNG frame từ đặc trưng (T, D) (dự đoán ở 1/sample_rate rồi lặp lại).
+    decode: argmax (từng frame) | sop (ràng buộc thứ tự SOP, xem sop_decode); None → hparams['decode'] của model."""
     norm = ds.Normalizer.from_json(cfg["normalizer"])
     sr = int(cfg["hparams"]["sample_rate"])
+    if cfg.get("feature_cols") and len(cfg["feature_cols"]) != feats.shape[1]:
+        feats = feats[:, _col_index(cfg["feature_cols"])]
     enc = ds.Encoded("x", norm(feats[::sr]), np.zeros(len(feats[::sr]), np.int64))
-    pred = _predict_encoded(model, enc, device)
+    decode = decode or cfg["hparams"].get("decode", "argmax")
+    if decode == "sop":
+        fps_eff = float((station or {}).get("fps", 30.0)) / sr
+        min_len = max(1, int(round(cfg["hparams"].get("min_seg_s", 0.5) * fps_eff)))
+        pred = sop_decode(_logprobs_encoded(model, enc, device), cfg["classes"],
+                          sop_plan(cfg["classes"], station), min_len)
+    elif decode == "argmax":
+        pred = _predict_encoded(model, enc, device)
+    else:
+        raise ValueError(f"decode không hợp lệ: {decode} (argmax | sop)")
     full = np.repeat(pred, sr)[: len(feats)]
     if len(full) < len(feats):
         full = np.concatenate([full, np.full(len(feats) - len(full), full[-1] if len(full) else 0)])
     return [cfg["classes"][i] for i in full]
 
 
-def predict_frames(model, cfg: dict, kp: dict, fps: float, device: str = "cpu") -> list[str]:
+def predict_frames(model, cfg: dict, kp: dict, fps: float, device: str = "cpu", decode: str | None = None,
+                   station: dict | None = None) -> list[str]:
     """Lớp cho TỪNG frame của .npz."""
-    return predict_feats(model, cfg, frame_features(kp, fps), device)
+    return predict_feats(model, cfg, frame_features(kp, fps), device, decode, station)
 
 
 def frames_to_steps(keys: list[str], t: np.ndarray, station: dict, min_seg_s: float = 0.5):
@@ -483,31 +660,55 @@ def predict_steps(model_dir: str | Path | None, npz: str | Path, station: dict, 
     pose = kp["meta"].get("model", "")
     if cfg.get("pose_model") and pose and pose not in cfg["pose_model"]:
         log(f"cảnh báo: model train trên pose {cfg['pose_model']} nhưng .npz là {pose!r} — kết quả có thể kém")
-    keys = predict_frames(model, cfg, kp, float(station["fps"]), device)
+    keys = predict_frames(model, cfg, kp, float(station["fps"]), device, station=station)
     msm = cfg["hparams"].get("min_seg_s", 0.5) if min_seg_s is None else min_seg_s
     df, info = frames_to_steps(keys, kp["t"], station, msm)
     return df, info, cfg
 
 
 # ---------------------------------------------------------------- đánh giá mức bước (giống 04 eval)
-def infer_trial(model, cfg: dict, trial: ds.Trial, data_root: str, station: dict, device: str) -> dict:
+def infer_trial(model, cfg: dict, trial: ds.Trial, data_root: str, station: dict, device: str,
+                decode: str | None = None) -> dict:
     """Suy luận 1 trial có nhãn → {keys, pred (bảng bước), oracle, metrics (frame + mức bước), infer_s}."""
     from kaizen.analyzer.steps import evaluate, oracle_from_labels
     from kaizen.skeleton import ha4m_io
     s, t = trial.stem.split("_")
     t0 = time.time()
-    keys = predict_feats(model, cfg, trial.feats, device)
+    keys = predict_feats(model, cfg, trial.feats, device, decode, station)
     infer_s = time.time() - t0
     pred, _ = frames_to_steps(keys, trial.t, station, cfg["hparams"].get("min_seg_s", 0.5))
     orc = oracle_from_labels(ha4m_io.load_labels(data_root, s, t), station)
+    pred, orc, gt, cut_s, dropped = crop_to_observed(pred, orc, list(trial.keys), trial.t, float(station["fps"]))
     e = evaluate(pred, orc).to_json_dict()
-    frame_rep = segment_report(keys, list(trial.keys), bg="0", ignore="")
+    frame_rep = segment_report(keys, gt, bg="0", ignore="")
     metrics = {"trial": trial.stem, **{k: e[k] for k in STEP_METRICS + ("n_pred", "n_oracle")}, **frame_rep}
-    return {"keys": keys, "pred": pred, "oracle": orc, "metrics": metrics, "infer_s": infer_s}
+    if cut_s is not None:
+        metrics.update(eval_cut_s=round(cut_s, 3), steps_unobserved=",".join(dropped))
+    return {"keys": keys, "gt": gt, "pred": pred, "oracle": orc, "metrics": metrics, "infer_s": infer_s}
 
 
-def step_eval(model, cfg: dict, trial: ds.Trial, data_root: str, station: dict, device: str) -> dict:
-    return infer_trial(model, cfg, trial, data_root, station, device)["metrics"]
+def crop_to_observed(pred: pd.DataFrame, orc: pd.DataFrame, gt: list[str], t: np.ndarray, fps: float):
+    """Video thiếu ảnh ở cuối (keypoints ngắn hơn nhãn, vd zip giải nén dở): chỉ chấm phần ĐÃ QUAN SÁT.
+    Cắt tại đầu bước oracle đầu tiên bị cụt → bỏ các bước từ đó khỏi oracle, cắt pred, frame sau mốc → "" (bỏ qua).
+    Video đủ → trả nguyên. Trả (pred, orc, gt, cut_s | None, [khoá bước bị bỏ])."""
+    t_obs = float(t[-1]) + 1.0 / fps if len(t) else 0.0
+    cut_rows = orc[orc["end_s"] > t_obs + 1.5 / fps]
+    if cut_rows.empty:
+        return pred, orc, gt, None, []
+    cut = float(cut_rows["start_s"].min())
+    dropped = [f"{int(a)}.{int(r)}" for a, r in orc.loc[orc["end_s"] > cut + 1e-6, ["step_id", "repetition"]]
+               .itertuples(index=False)]
+    orc = orc[orc["end_s"] <= cut + 1e-6].reset_index(drop=True)
+    pred = pred[pred["start_s"] < cut].copy()
+    pred["end_s"] = pred["end_s"].clip(upper=cut)
+    pred["dur_s"] = (pred["end_s"] - pred["start_s"]).round(3)
+    gt = [k if tt < cut else "" for k, tt in zip(gt, t)]
+    return pred.reset_index(drop=True), orc, gt, cut, dropped
+
+
+def step_eval(model, cfg: dict, trial: ds.Trial, data_root: str, station: dict, device: str,
+              decode: str | None = None) -> dict:
+    return infer_trial(model, cfg, trial, data_root, station, device, decode)["metrics"]
 
 
 def summarize(rows: list[dict]) -> dict:
@@ -836,21 +1037,25 @@ def cmd_test(a) -> int:
     if not trials:
         return 1
     leak = _leak_check(cfg, trials, split)
-    out = Path(a.out_dir) if a.out_dir else mdir / ("test" if a.checkpoint in ("", "best") else f"test_{a.checkpoint}")
+    out = Path(a.out_dir) if a.out_dir else mdir / (("test" if a.checkpoint in ("", "best") else f"test_{a.checkpoint}")
+                                                    + (f"_{a.decode}" if a.decode else ""))
     (out / "trials").mkdir(parents=True, exist_ok=True)
     classes = cfg["classes"]
     rows, all_gt, all_pred, times = [], [], [], []
     for tr in trials:
-        r = infer_trial(model, cfg, tr, a.data_root, station, device)
+        r = infer_trial(model, cfg, tr, a.data_root, station, device, a.decode or None)
         rows.append(r["metrics"])
         times.append({"trial": tr.stem, "frames": len(tr.feats), "infer_s": round(r["infer_s"], 4)})
-        all_gt += list(tr.keys)
+        if "eval_cut_s" in r["metrics"]:
+            log(f"⚠ {tr.stem}: video thiếu ảnh cuối → chỉ chấm đến {r['metrics']['eval_cut_s']} s, "
+                f"bỏ bước {r['metrics']['steps_unobserved']}")
+        all_gt += r["gt"]
         all_pred += r["keys"]
-        pd.DataFrame({"frame": tr.frame, "t": np.round(tr.t, 4), "gt": tr.keys, "pred": r["keys"]}).to_csv(
+        pd.DataFrame({"frame": tr.frame, "t": np.round(tr.t, 4), "gt": r["gt"], "pred": r["keys"]}).to_csv(
             out / "trials" / f"{tr.stem}_frames.csv", index=False)
         r["pred"].to_csv(out / "trials" / f"{tr.stem}_steps_pred.csv", index=False)
         r["oracle"].to_csv(out / "trials" / f"{tr.stem}_steps_oracle.csv", index=False)
-        _plot_gantt(list(tr.keys), r["keys"], tr.t, classes, out / "trials" / f"{tr.stem}_gantt.png",
+        _plot_gantt(r["gt"], r["keys"], tr.t, classes, out / "trials" / f"{tr.stem}_gantt.png",
                     f"{tr.stem} · F1@50 {r['metrics']['f1@50']} · F1@IoU0.5 {r['metrics']['f1_iou05']}")
     df = pd.DataFrame(rows)
     df.to_csv(out / "per_trial.csv", index=False)
@@ -862,7 +1067,8 @@ def cmd_test(a) -> int:
                     f"{mdir.name} · {len(trials)} trial test · frame-level (%, chuẩn hoá theo hàng)")
     s = summarize(rows)
     tot_f = sum(x["frames"] for x in times)
-    summary = {"model": str(mdir), "checkpoint": a.checkpoint or "best", "epoch": cfg.get("epoch", cfg.get("best_epoch")),
+    summary = {"model": str(mdir), "checkpoint": a.checkpoint or "best",
+               "decode": a.decode or cfg["hparams"].get("decode", "argmax"), "epoch": cfg.get("epoch", cfg.get("best_epoch")),
                "n_params": cfg.get("n_params"), "device": device, "trials": [t.stem for t in trials],
                "subjects": sorted({t.subject for t in trials}), "leak_trials": leak, "summary": s,
                "macro_f1_frames": round(float(pcr.loc[pcr.support_frames > 0, "f1"].mean()), 2),
@@ -979,6 +1185,8 @@ def main(argv=None) -> int:
     p.add_argument("--checkpoint", default="best", help="best (model.pt) | epoch_0040 …")
     p.add_argument("--trials", default="", help="trial tường minh (mặc định: test_subjects/test_trials trong config)")
     p.add_argument("--out-dir", default="")
+    p.add_argument("--decode", default="", choices=["", "argmax", "sop"],
+                   help="giải mã: argmax | sop (ràng buộc thứ tự SOP); mặc định theo hparams của model")
     p = sub.add_parser("cv", help="cross-validation theo subject")
     _add_data(p)
     _add_hp(p)

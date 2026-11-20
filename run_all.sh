@@ -10,7 +10,7 @@
 # --run      : ghi vào run đã có thay vì tạo run mới
 # --force    : chạy lại cả 00/01 (trích keypoints chậm ~6 phút/video). 02–08 luôn tính lại trong run.
 # --segmenter: cách tách bước ở 04 predicted — rule (mặc định) | mstcn (model đã train, xem docs/training.md)
-# Python: dùng $PY nếu đặt, mặc định `python` (hãy `conda activate kaizen-py311` trước).
+# Python: dùng $PY nếu đặt, mặc định `python` (hãy `conda activate courier310` hoặc `kaizen-py311` trước).
 # Key/LLM: tự nạp ./.env nếu có (ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, LLM_PROVIDER, LLM_MODEL).
 set -euo pipefail
 cd "$(dirname "$0")"

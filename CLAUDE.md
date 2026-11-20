@@ -273,9 +273,11 @@ data/keypoints/<stem>_<model>.npz          # KHÔNG thuộc run — tái dùng g
 7. (Nếu còn thời gian) đối chứng skeleton Kinect; TODO v2: DTW golden cycle, ruptures, RTMW3D.
 
 ## Quy ước code
-- Python 3.10+, chỉ dùng lib trong requirements.txt sẵn có (numpy<2, pandas, scipy, shapely,
+- Python 3.10+, chỉ dùng lib trong requirements.txt sẵn có (numpy, pandas, scipy, shapely,
   OneEuroFilter, matplotlib, opencv qua mediapipe, anthropic, google-genai, openai; RAG/API: fastapi, uvicorn,
-  python-multipart, pymupdf, chromadb, sentence-transformers (torch CPU); pytest cho tests). Không Docker, không DB server.
+  python-multipart, pymupdf, chromadb, sentence-transformers (torch ≥ 2.2, CPU hoặc CUDA); pytest cho tests). Không Docker, không DB server.
+  Env: `courier310` (py3.10, torch 2.6.0+cu124, GPU — cài `pip install -r requirements.txt -c constraints-gpu.txt`,
+  constraints giữ torch/OpenCV của env dùng chung) hoặc `kaizen-py311` (py3.11, torch CPU).
 - Type hint + docstring ngắn cho hàm public. Không class nếu hàm đủ. Log bằng print có prefix `[02]`...
 - Mọi script: chạy được từ repo root, tạo thư mục output nếu chưa có, không ghi đè im lặng
   (thêm `--force`).
