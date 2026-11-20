@@ -1,0 +1,5 @@
+# latexmk dùng XeLaTeX (tiếng Việt + font TeX Gyre). Chạy: cd docs/report && latexmk   |  dọn: latexmk -c
+$pdf_mode = 5;
+$xelatex = 'xelatex -interaction=nonstopmode -halt-on-error -file-line-error %O %S';
+@default_files = ('main.tex');
+$out_dir = 'build';

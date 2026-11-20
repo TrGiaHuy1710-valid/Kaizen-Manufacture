@@ -1,0 +1,14 @@
+% ============================== ABSTRACT ==============================
+ 
+\begin{abstract}
+Trong sản xuất, đo thời gian thao tác thủ công thường mất 2--4 giờ mỗi trạm và chỉ ghi nhận được một số chu kỳ, khiến việc theo dõi liên tục lãng phí (\muda), biến động (\mura) và quá tải (\muri) gặp nhiều hạn chế.
+
+Chúng tôi đề xuất \textit{AI Kaizen Copilot}, hệ thống chuyển video RGB tại trạm lắp ráp thành các chỉ số Kaizen và đề xuất cải tiến có trích dẫn nguồn. Pipeline gồm ba tầng: (i) \textit{Skeleton} sử dụng MediaPipe, RTMW hoặc RTMPose để ước lượng và xử lý quỹ đạo khung xương 2D, từ đó nhận diện các sự kiện thao tác; (ii) \textit{Analyzer} phân đoạn chu kỳ thành 12 bước SOP bằng luật hoặc MS-TCN, tính toán cycle time, \%VA, quãng đường tay và độ biến thiên, đồng thời áp dụng tám quy tắc (R1--R8) để phát hiện và xếp hạng vấn đề; (iii) \textit{LLM} kết hợp RAG để diễn giải kết quả và trích dẫn hướng dẫn công việc. Đầu ra được kiểm chứng bằng code nhằm đảm bảo tính nhất quán của số liệu và nguồn tham chiếu.
+
+Thử nghiệm trên HA4M (lắp ráp bộ bánh răng hành tinh, Azure Kinect, 30 fps) cho thấy baseline luật đạt F1 lần lượt 0,75 và 0,714 trong nhận diện sự kiện và phân đoạn bước SOP; MAE thời lượng bước đạt 0,62--0,92 s, sai số cycle time đạt 0,6--2,27 s. Gemini 2.5 Flash đạt tỷ lệ kiểm chứng 100\% sau tối đa một lần hỏi lại. Hệ thống phát hiện bước 9 và 12 chậm hơn chuẩn lần lượt 76,1\% và 34,3\% trong chu kỳ lắp ráp thứ hai. Kết quả MS-TCN sẽ được trình bày tại \cref{sec:exp}.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Kaizen, Muda--Mura--Muri, ước lượng khung xương, phân đoạn hành động theo thời gian, MS-TCN, HA4M,
+mô hình ngôn ngữ lớn, truy xuất tăng cường (RAG), kiểm chứng đầu ra LLM.
+\end{IEEEkeywords}

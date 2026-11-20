@@ -217,3 +217,42 @@ def test_04_steps_cli_with_mstcn(tmp_path, monkeypatch):
     assert (steps / "U903_V001_pred.csv").exists() and (steps / "U903_V001_pred_info.json").exists()
     e = json.loads((steps / "U903_V001_eval.json").read_text())
     assert e["n_oracle"] == 4 and "f1_iou05" in e          # 1.0, 2.0, 2.1, 3.0
+
+
+def test_train_checkpoints_tensorboard_benchmark_test_resume(tmp_path, monkeypatch):
+    """train lưu checkpoint theo epoch + last.pt + TensorBoard; benchmark đọc mọi checkpoint; test xuất dự đoán,
+    confusion matrix, summary; --resume train tiếp tới số epoch mới."""
+    from kaizen.train import segmenter as sg
+    root, kp = _ha4m(tmp_path, 5)
+    station = _station(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    common = ["--data-root", str(root), "--keypoints-dir", str(kp), "--config", str(station), "--device", "cpu"]
+    hp = ["--stages", "2", "--layers", "3", "--channels", "16", "--dropout", "0.1", "--sample-rate", "3",
+          "--eval-every", "2", "--ckpt-every", "4", "--patience", "100", "--lr", "0.005", "--threads", "1"]
+    assert sg.main(["train", *common, *hp, "--name", "ck", "--epochs", "8", "--val-subjects", "U903",
+                    "--test-subjects", "U904"]) == 0
+    m = Path("models/segmenter/ck")
+    assert sorted(p.name for p in (m / "checkpoints").glob("*.pt")) == ["epoch_0004.pt", "epoch_0008.pt", "last.pt"]
+    assert list((m / "tb").glob("events.out.tfevents.*")) and (m / "train_curve.png").exists()
+    cfg = json.loads((m / "config.json").read_text())
+    assert cfg["test_subjects"] == ["U904"] and "U904_V001" not in cfg["train_trials"] + cfg["val_trials"]
+    log = (m / "train_log.csv").read_text().splitlines()
+    assert "val_loss" in log[0] and "loss_ce" in log[0] and len(log) == 9
+
+    assert sg.main(["benchmark", *common, "--model", str(m), "--split", "val"]) == 0
+    b = json.loads((m / "benchmark_val.json").read_text())
+    assert [r["epoch"] for r in b["rows"]] == [4, 8] and b["trials"] == ["U903_V001"]
+
+    assert sg.main(["test", *common, "--model", str(m)]) == 0
+    s = json.loads((m / "test" / "summary.json").read_text())
+    assert s["trials"] == ["U904_V001"] and not s["leak_trials"] and s["inference"]["ms_per_video_mean"] > 0
+    for f in ("per_trial.csv", "per_class.csv", "confusion_frames.csv", "confusion_frames.png",
+              "trials/U904_V001_frames.csv", "trials/U904_V001_steps_pred.csv", "trials/U904_V001_gantt.png"):
+        assert (m / "test" / f).exists(), f
+    assert sg.main(["test", *common, "--model", str(m), "--checkpoint", "epoch_0004"]) == 0
+    assert (m / "test_epoch_0004" / "summary.json").exists()
+
+    assert sg.main(["train", *common, *hp, "--name", "ck", "--epochs", "12", "--val-subjects", "U903",
+                    "--test-subjects", "U904", "--resume"]) == 0
+    assert (m / "checkpoints" / "epoch_0012.pt").exists()
+    assert len((m / "train_log.csv").read_text().splitlines()) == 13

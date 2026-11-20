@@ -33,7 +33,10 @@ Nguyên tắc BẤT DI BẤT DỊCH:
 
 ## Training tuỳ chọn (`kaizen/train/` — hướng dẫn lệnh: docs/training.md)
 - `segmenter` (MS-TCN, torch): keypoint .npz + Labels.txt → tách bước theo frame, lớp = (action, repetition).
-  `python -m kaizen.train.segmenter status|train|cv|eval|predict`; model ở `models/segmenter/<name>/` + `LATEST`.
+  `python -m kaizen.train.segmenter status|train|benchmark|test|cv|eval|predict`; model ở `models/segmenter/<name>/`
+  + `LATEST` (model.pt = best theo val F1@50, checkpoints/epoch_XXXX.pt mỗi `--ckpt-every`, last.pt cho `--resume`,
+  tb/ TensorBoard; `benchmark` đánh giá mọi checkpoint theo epoch, `test` xuất dự đoán/confusion/Gantt vào test/).
+  Zip HA4M → .npz khi đĩa ít chỗ: `src/tools/prepare_ha4m.py` (chỉ giải nén Color+Labels, trích, xoá ảnh).
   04: `--segmenter rule|mstcn` (mặc định env `KAIZEN_SEGMENTER`, không có → rule; artifact rule không đổi).
   Đặc trưng spec `kp_v1` (`features.py`, numpy) dùng chung train/suy luận; chia train/val/test THEO SUBJECT.
 - `pose` (fine-tune RTMPose COCO-17): `prepare` xuất COCO từ skeleton Kinect (nhãn giả), `eval` PCK vs Kinect;

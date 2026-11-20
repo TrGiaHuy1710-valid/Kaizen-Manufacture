@@ -1,0 +1,30 @@
+% ============================== VI. CONCLUSION ==============================
+\section{Conclusion}
+\label{sec:conclusion}
+Báo cáo đã trình bày AI Kaizen Copilot, một pipeline phân tích thao tác lắp ráp từ video RGB.
+Pipeline đi từ khung xương 2D tới chỉ số \muda/\mura/\muri{} có đơn vị và định nghĩa,
+rồi tới danh sách phát hiện xếp hạng theo giây/chu kỳ và giải thích LLM \textit{có kiểm chứng bằng code}.
+Ba lựa chọn thiết kế giúp hệ thống đáng tin hơn một hệ ``LLM xem video'':
+(i) mọi con số do tầng phân tích tất định tính ra;
+(ii) LLM bị ràng buộc bởi whitelist số liệu và tập trích dẫn hợp lệ, có hỏi lại khi sai;
+(iii) chế độ oracle tách sai số thị giác khỏi phần phân tích.
+Trên HA4M, baseline quy tắc không cần huấn luyện đã đạt \Fone{} 0{,}71--0{,}75 và sai số cycle time dưới 2{,}3\,s.
+Hệ thống chỉ ra đúng hai bước vượt thời gian chuẩn (bước 9: $+76{,}1\%$; bước 12: $+34{,}3\%$), kèm trích dẫn tới
+trang của work instruction.
+Tầng LLM đạt 100\% kiểm chứng sau một lần hỏi lại.
+\todo{Một câu kết quả MS-TCN so với baseline khi đã train trên nhiều người.}
+
+\textbf{Hướng phát triển.}
+\begin{itemize}
+  \item Huấn luyện và đánh giá MS-TCN trên toàn bộ 41 người của HA4M, có so sánh với ST-GCN
+        và MS-TCN++.
+  \item Căn chỉnh chu kỳ với một chu kỳ mẫu (golden cycle) của người thợ giỏi bằng DTW,
+        để đo khoảng cách kỹ năng giữa người mới và người thạo việc.
+  \item Hiệu chuẩn px sang cm, ước lượng 3D (RTMW3D hoặc độ sâu Kinect) cho Muri, và hỗ trợ nhiều camera.
+  \item Pilot tại một trạm thật của DENSO: vẽ zone theo layout thật, đối chiếu với kỹ sư IE, và đo tỷ lệ đề xuất được chấp nhận.
+\end{itemize}
+
+\section*{Acknowledgment}
+\addcontentsline{toc}{section}{Acknowledgment}
+Nhóm cảm ơn ban tổ chức DENSO Factory Hacks 2026 và nhóm tác giả bộ dữ liệu HA4M \cite{ha4m}
+đã công bố dữ liệu. \todo{bổ sung lời cảm ơn khác nếu có}

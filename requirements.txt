@@ -36,6 +36,7 @@ chromadb==1.5.9              # vector store persistent data/rag_store/ (không s
 sentence-transformers==6.1.0 # embedder local intfloat/multilingual-e5-small
 # torch: bản CPU là đủ cho e5-small và nhẹ hơn nhiều (~200 MB thay vì vài GB CUDA):
 #   pip install --index-url https://download.pytorch.org/whl/cpu torch
+tensorboard==2.21.0          # log train MS-TCN (kaizen.train.segmenter) — tuỳ chọn, thiếu thì bỏ qua log TB
 
 # Hiển thị / dashboard
 matplotlib

@@ -38,3 +38,6 @@ Thumbs.db
 # --- IDE ---
 .vscode/
 .idea/
+
+# --- LaTeX build (docs/report) ---
+docs/report/build/

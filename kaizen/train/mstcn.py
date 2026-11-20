@@ -57,15 +57,21 @@ class MSTCN(nn.Module):
 
 
 def mstcn_loss(logits: torch.Tensor, y: torch.Tensor, mask: torch.Tensor, lam: float = 0.15,
-               tau: float = 4.0, ignore_index: int = -100) -> torch.Tensor:
-    """logits (S, B, C, T), y (B, T) với ignore_index cho frame không nhãn/đệm, mask (B, 1, T)."""
-    loss = logits.new_zeros(())
+               tau: float = 4.0, ignore_index: int = -100, return_parts: bool = False):
+    """logits (S, B, C, T), y (B, T) với ignore_index cho frame không nhãn/đệm, mask (B, 1, T).
+
+    return_parts=True → (loss, {"ce": Σ_stage CE, "smooth": Σ_stage λ·T-MSE}) để log riêng từng thành phần."""
+    ce_tot = logits.new_zeros(())
+    sm_tot = logits.new_zeros(())
     C = logits.shape[2]
     for p in logits:
-        loss = loss + F.cross_entropy(p.transpose(2, 1).reshape(-1, C), y.reshape(-1), ignore_index=ignore_index)
+        ce_tot = ce_tot + F.cross_entropy(p.transpose(2, 1).reshape(-1, C), y.reshape(-1), ignore_index=ignore_index)
         if p.shape[-1] > 1:
             d = F.mse_loss(F.log_softmax(p[:, :, 1:], dim=1), F.log_softmax(p.detach()[:, :, :-1], dim=1),
                            reduction="none")
             m = mask[:, :, 1:]
-            loss = loss + lam * (torch.clamp(d, 0, tau ** 2) * m).sum() / (m.sum() * C).clamp(min=1)
+            sm_tot = sm_tot + lam * (torch.clamp(d, 0, tau ** 2) * m).sum() / (m.sum() * C).clamp(min=1)
+    loss = ce_tot + sm_tot
+    if return_parts:
+        return loss, {"ce": float(ce_tot.detach()), "smooth": float(sm_tot.detach())}
     return loss

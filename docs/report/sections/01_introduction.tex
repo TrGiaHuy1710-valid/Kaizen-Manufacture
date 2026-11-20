@@ -1,0 +1,52 @@
+% ============================== 1. INTRODUCTION ==============================
+\section{Introduction}
+\label{sec:intro}
+
+Trong sản xuất tinh gọn, Kaizen là quá trình cải tiến liên tục dựa trên quan sát hiện trường.
+Kỹ sư công nghiệp (IE) nhận diện ba nhóm tổn thất: \muda{} (lãng phí, như chờ đợi, di chuyển thừa, lấy thừa),
+\mura{} (biến động giữa các chu kỳ hoặc giữa các công nhân) và \muri{} (quá tải thể chất, như tư thế cổ tay bất lợi).
+Công cụ truyền thống là nghiên cứu thao tác và thời gian (motion and time study): kỹ sư đứng tại trạm, bấm giờ từng bước,
+ghi chép rồi vẽ biểu đồ Yamazumi bằng tay.
+Cách làm này tốn 2--4 giờ cho mỗi trạm, kết quả phụ thuộc người đo, và chỉ lấy được vài chu kỳ nên bỏ sót biến động.
+Hệ quả là bí quyết của người thợ giỏi (thứ tự động tác, nhịp, phối hợp hai tay) vẫn là tri thức ngầm,
+và dễ mất đi khi người đó nghỉ việc.
+
+Thị giác máy tính có thể đo các đại lượng này liên tục và rẻ hơn.
+Ước lượng khung xương 2D thời gian thực đã chạy được trên CPU \cite{mp_pose,rtmpose}.
+Các mạng phân đoạn hành động theo thời gian như MS-TCN \cite{farha2019mstcn} tách được chuỗi thao tác dài thành từng bước.
+Mô hình ngôn ngữ lớn (LLM) có thể diễn giải kết quả bằng ngôn ngữ của kỹ sư.
+Tuy vậy, có hai trở ngại thực tế khi ghép các khối này lại.
+Thứ nhất, LLM có xu hướng \textit{bịa} số liệu hoặc nguồn trích dẫn (hallucination).
+Điều này không chấp nhận được khi con số dẫn tới quyết định thay đổi quy trình.
+Thứ hai, sai số của phần thị giác lan sang mọi chỉ số phía sau, nên cần đo được sai số đó và tách bạch nó với phần phân tích.
+
+Báo cáo này trình bày \textit{AI Kaizen Copilot}, đề tài của nhóm trong môn Học máy nâng cao, đồng thời là bài dự thi
+DENSO Factory Hacks 2026 \cite{denso}. Hệ thống là một pipeline phân tích thao tác lắp ráp từ video, được xây dựng
+quanh bốn nguyên tắc:
+\begin{enumerate}
+  \item \textbf{Mọi con số do code tính.} LLM chỉ được giải thích. Một bộ kiểm chứng (validator) bằng code bác bỏ
+        mọi câu trả lời chứa số liệu ngoài whitelist của phát hiện hoặc trích dẫn không có thật.
+  \item \textbf{Mỗi bước là một chương trình đọc file vào, ghi file ra}, chạy lại độc lập được, và lưu toàn bộ cấu hình,
+        phiên bản code, lệnh gốc của mỗi lần chạy để truy vết.
+  \item \textbf{Chế độ \textit{oracle}.} Có thể thay phần phân đoạn tự động bằng nhãn chuyên gia.
+        Như vậy nửa sau của pipeline (chỉ số, phát hiện, LLM, báo cáo) được phát triển và đánh giá độc lập với sai số thị giác.
+        Chênh lệch giữa oracle và dự đoán chính là sai số của phần thị giác.
+  \item \textbf{Đơn giản trước, học sâu sau.} Đường mặc định chỉ dùng model pretrained, quy tắc và thống kê.
+        Phần huấn luyện (MS-TCN, fine-tune RTMPose) là tuỳ chọn và có baseline để so sánh.
+\end{enumerate}
+
+\noindent Đóng góp chính của đề tài gồm:
+\begin{itemize}
+  \item Một pipeline đầu--cuối, mô-đun hoá, từ video tới chỉ số \muda/\mura/\muri{} có đơn vị và định nghĩa,
+        rồi tới phát hiện xếp hạng theo ảnh hưởng (giây/chu kỳ) và báo cáo có bằng chứng hình ảnh (\cref{sec:method}).
+  \item Một tầng diễn giải LLM \textit{có kiểm chứng}: whitelist số liệu theo từng phát hiện, trích dẫn tĩnh (KB/SOP)
+        hoặc động (chunk\_id của tài liệu RAG), hỏi lại có phản hồi lỗi, và báo cáo tỷ lệ đạt (\cref{subsec:llm}).
+  \item Một bộ phân đoạn bước học từ khung xương (MS-TCN trên đặc trưng 105 chiều) với phép chia dữ liệu theo người lắp,
+        cùng quy trình fine-tune RTMPose dùng skeleton Azure Kinect làm nhãn giả (\cref{sec:impl}).
+  \item Đánh giá trên HA4M \cite{ha4m}: độ chính xác pose so với Kinect, phân đoạn bước so với nhãn,
+        tỷ lệ đạt kiểm chứng của LLM, và một nghiên cứu tình huống phát hiện Kaizen (\cref{sec:exp}).
+\end{itemize}
+
+Phần còn lại của báo cáo: \cref{sec:related} tổng quan các hướng liên quan, \cref{sec:method} trình bày phương pháp,
+\cref{sec:impl} mô tả hiện thực, model, dữ liệu và huấn luyện, \cref{sec:exp} báo cáo thực nghiệm và
+\cref{sec:conclusion} kết luận.
