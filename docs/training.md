@@ -59,7 +59,22 @@ python -m kaizen.train.segmenter status    # số trial sẵn sàng (có .npz + 
 
 Tuỳ chọn: `--with-skeletons` giải nén thêm skeleton Kinect (20 MB/trial), cần cho `kaizen.train.pose eval`.
 
-### A2. Chia dữ liệu (khuyến nghị cho U001–U010)
+### A2. Thống kê + chia dữ liệu (`kaizen/train/split.py`)
+
+```bash
+python -m kaizen.train.split stats          # từng video: READY / NEED_EXTRACT / NO_LABELS, số frame, 17 bước đủ chưa,
+                                            # zip đang tải dở (INCOMPLETE) hay chưa giải nén → outputs/dataset/ha4m_stats.md
+python -m kaizen.train.split make --name v1 # → data/splits/v1.json (cố định; không ghi đè nếu thiếu --force)
+python -m kaizen.train.segmenter train --split-file data/splits/v1.json --name mstcn_v1
+bash src/tools/train_ha4m.sh --split v1     # gộp cả 5 bước: stats → 01_extract → split → train → test
+```
+
+`--strategy auto` tự chọn theo số video có nhãn: **1 video → `overfit`** (train = val, không có test, chỉ để kiểm tra code
+chạy thông; không thể cắt 1 video theo thời gian vì các bước nối tiếp nhau); **≥ 2 video nhưng < 3 người → `trial`**
+(chia theo video, có thể rò rỉ theo người, chỉ dùng thử); **≥ 3 người → `subject`**. U001 luôn ở train (`--pin-train`).
+Ép tay: `--val U008 --test U009,U010` (subject hoặc video). Có thêm dữ liệu thì tạo split mới (`--name v2`), không sửa v1.
+
+Khuyến nghị cho U001–U010:
 
 Chia **theo người** (không ai xuất hiện ở hai tập), và quyết định split **trước khi** nhìn bất kỳ kết quả test nào:
 

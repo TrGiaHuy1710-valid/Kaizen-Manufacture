@@ -39,6 +39,8 @@ Nguyên tắc BẤT DI BẤT DỊCH:
   Zip HA4M → .npz khi đĩa ít chỗ: `src/tools/prepare_ha4m.py` (chỉ giải nén Color+Labels, trích, xoá ảnh).
   04: `--segmenter rule|mstcn` (mặc định env `KAIZEN_SEGMENTER`, không có → rule; artifact rule không đổi).
   Đặc trưng spec `kp_v1` (`features.py`, numpy) dùng chung train/suy luận; chia train/val/test THEO SUBJECT.
+  `python -m kaizen.train.split stats|make|show` (thống kê + split cố định `data/splits/<name>.json`, auto
+  overfit/trial/subject theo lượng dữ liệu) → `segmenter train --split-file`; gộp: `bash src/tools/train_ha4m.sh`.
 - `pose` (fine-tune RTMPose COCO-17): `prepare` xuất COCO từ skeleton Kinect (nhãn giả), `eval` PCK vs Kinect;
   train bằng mmpose trong env riêng (`pose_configs/`), export ONNX → backend `rtmpose-custom` (env `KAIZEN_POSE_ONNX`).
 - Test: `tests/test_train.py` (dữ liệu tổng hợp, smoke-train vài epoch — không phải train thật).

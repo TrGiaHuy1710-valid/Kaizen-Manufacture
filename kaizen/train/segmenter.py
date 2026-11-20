@@ -464,6 +464,7 @@ def frames_to_steps(keys: list[str], t: np.ndarray, station: dict, min_seg_s: fl
         rows.append(dict(step_id=a, repetition=rep, name=names.get(a, str(a)), start_s=round(float(t[s]), 3),
                          end_s=round(float(t[e - 1]) + 1.0 / fps, 3)))
     df = pd.DataFrame(rows, columns=COLS[:-2])
+    df[["start_s", "end_s"]] = df[["start_s", "end_s"]].astype(float)    # rỗng (model chỉ đoán nền) vẫn là số
     df["dur_s"] = (df["end_s"] - df["start_s"]).round(3)
     df["source"] = "pred"
     plan = [f"{int(st['id'])}.{r}" for st in station.get("steps", []) for r in range(int(st.get("reps", 1)))]
@@ -644,13 +645,36 @@ def cmd_train(a) -> int:
     if (out / "model.pt").exists() and not (a.force or a.resume):
         log(f"{out} đã có model (--force để ghi đè, --resume để train tiếp, hoặc đổi --name)")
         return 1
-    trials, _ = load_trials(a.data_root, a.keypoints_dir, a.pose_model, _subset(a.subjects), float(station["fps"]),
-                            a.max_trials)
-    trials = [t for t in trials if t.subject not in test_s and t.stem not in test_t]
-    if len(trials) < 2:
-        log("cần ≥ 2 trial có keypoints + nhãn (xem: python -m kaizen.train.segmenter status)")
-        return 1
-    if val_t:
+    split_info: dict = {}
+    if a.split_file:
+        from kaizen.train.split import load_split
+        sp = load_split(a.split_file)
+        if a.val_subjects or a.val_trials or a.test_subjects or a.test_trials:
+            log("⚠ có --split-file → bỏ qua --val-*/--test-*")
+        want_tr, want_va = set(sp["train"]), set(sp["val"])
+        trials, _ = load_trials(a.data_root, a.keypoints_dir, a.pose_model, None, float(station["fps"]), 0,
+                                want_tr | want_va)
+        missing = sorted((want_tr | want_va) - {t.stem for t in trials})
+        if missing:
+            log(f"⚠ {len(missing)} trial trong split thiếu .npz/nhãn, bỏ qua: {', '.join(missing)} → trích: "
+                f"python src/01_extract.py --data-root {a.data_root} --subjects all --trials all --model {a.pose_model}")
+        train = [t for t in trials if t.stem in want_tr]
+        val = [t for t in trials if t.stem in want_va]
+        test_s, test_t = set(), set(sp["test"])
+        split_info = {"split_file": str(a.split_file), "split_name": sp.get("name", ""),
+                      "split_strategy": sp.get("strategy", "")}
+        for w in sp.get("warnings", []):
+            log(f"⚠ split: {w}")
+    else:
+        trials, _ = load_trials(a.data_root, a.keypoints_dir, a.pose_model, _subset(a.subjects),
+                                float(station["fps"]), a.max_trials)
+        trials = [t for t in trials if t.subject not in test_s and t.stem not in test_t]
+        if len(trials) < 2:
+            log("cần ≥ 2 trial có keypoints + nhãn (xem: python -m kaizen.train.segmenter status)")
+            return 1
+    if a.split_file:
+        pass
+    elif val_t:
         val = [t for t in trials if t.stem in val_t]
         train = [t for t in trials if t.stem not in val_t]
         overlap = sorted({t.subject for t in val} & {t.subject for t in train})
@@ -673,7 +697,7 @@ def cmd_train(a) -> int:
             p.unlink()
     model, cfg, hist = train_model(train, val, hp, a.device, None,
                                    {"name": name, "data_root": a.data_root, "test_subjects": sorted(test_s),
-                                    "test_trials": sorted(test_t), "cmd": " ".join(sys.argv),
+                                    "test_trials": sorted(test_t), "cmd": " ".join(sys.argv), **split_info,
                                     "torch": _torch().__version__},
                                    ckpt_dir=out / "checkpoints", tb_dir=out / "tb", resume=a.resume)
     device = pick_device(a.device)
@@ -681,8 +705,9 @@ def cmd_train(a) -> int:
         rows = [step_eval(model, cfg, t, a.data_root, station, device) for t in val]
         cfg["val_step_eval"] = {"per_trial": rows, "summary": summarize(rows)}
         s = cfg["val_step_eval"]["summary"]
-        log(f"VAL @ epoch {cfg['best_epoch']} (mức bước, như 04 eval): F1@IoU0.5 {s['f1_iou05']} · "
-            f"MAE bước {s['mae_step_dur_s']} s · sai số CT {s['cycle_time_err_s']} s · F1@50 {s['f1@50']}")
+        log(f"VAL @ epoch {cfg['best_epoch']} (mức bước, như 04 eval): F1@IoU0.5 {s.get('f1_iou05', '—')} · "
+            f"MAE bước {s.get('mae_step_dur_s', '—')} s · sai số CT {s.get('cycle_time_err_s', '—')} s · "
+            f"F1@50 {s.get('f1@50', '—')}")
     save_model(model, cfg, out, hist)
     LATEST.parent.mkdir(parents=True, exist_ok=True)
     LATEST.write_text(name + "\n", encoding="utf-8")
@@ -937,6 +962,8 @@ def main(argv=None) -> int:
     p.add_argument("--val-trials", default="", help="val theo TRIAL (vd U001_V002) — chỉ để chạy thử, có rò rỉ theo người")
     p.add_argument("--test-subjects", default="", help="subject giữ riêng để test (loại hẳn khỏi train/val)")
     p.add_argument("--test-trials", default="", help="trial giữ riêng để test (vd U001_V003)")
+    p.add_argument("--split-file", default="", help="data/splits/<name>.json từ `python -m kaizen.train.split make` "
+                                                     "(thay cho --val-*/--test-*)")
     p.add_argument("--resume", action="store_true", help="train tiếp từ checkpoints/last.pt của --name")
     p.add_argument("--force", action="store_true")
     p = sub.add_parser("benchmark", help="đánh giá mọi checkpoint theo epoch trên tập val/test → bảng + biểu đồ")

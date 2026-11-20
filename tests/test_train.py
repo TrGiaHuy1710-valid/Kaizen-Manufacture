@@ -256,3 +256,55 @@ def test_train_checkpoints_tensorboard_benchmark_test_resume(tmp_path, monkeypat
                     "--test-subjects", "U904", "--resume"]) == 0
     assert (m / "checkpoints" / "epoch_0012.pt").exists()
     assert len((m / "train_log.csv").read_text().splitlines()) == 13
+
+
+# ---------------------------------------------------------------- thống kê + chia split (kaizen.train.split)
+def _keys_full_plan():
+    """Plan đủ 17 bước.lần của HA4M để kiểm cảnh báo 'thiếu bước'."""
+    from kaizen.train.split import EXPECTED_KEYS
+    return [("0", 30, 0.5)] + [(k, 40, 0.1 + 0.8 * i / 17) for i, k in enumerate(EXPECTED_KEYS)] + [("0", 30, 0.5)]
+
+
+def test_split_stats_and_strategies(tmp_path, monkeypatch):
+    from kaizen.train import split as sp
+    root, kp = _ha4m(tmp_path, 1)                               # 1 người, 1 video → overfit
+    tr = sp.trial_stats(str(root), kp)
+    assert list(tr["status"]) == ["READY"] and "thiếu bước" in tr["warnings"][0]
+    s1 = sp.make_split(tr)
+    assert s1["strategy"] == "overfit" and s1["train"] == s1["val"] == ["U900_V001"] and s1["test"] == []
+    # thêm video (cùng người U900 + người khác), một video chưa có .npz, một zip đang tải dở
+    vd = root / "IDU900V002"
+    (vd / "Color" / "000").mkdir(parents=True)
+    (vd / "Color" / "000" / "FrameID000000_DeviceTimeStamp1us.png").write_bytes(b"x")
+    (vd / "Labels.txt").write_text("0 1 0\r\n")
+    (root / "IDU950V001.zip").write_bytes(b"PK\x03\x04 dang tai")
+    ha4m_io._SCAN_CACHE.clear()
+    tr = sp.trial_stats(str(root), kp)
+    assert dict(zip(tr["stem"], tr["status"]))["U900_V002"] == "NEED_EXTRACT"
+    z = sp.zip_stats(str(root), wait_s=0)
+    assert list(z["status"]) == ["INCOMPLETE"] and list(z["stem"]) == ["U950_V001"]
+    s2 = sp.make_split(tr, pin_train={"U900"})
+    assert s2["strategy"] == "trial" and len(s2["train"]) == 1 and len(s2["val"]) == 1 and s2["test"] == []
+    assert s2["not_ready"] == ["U900_V002"]
+    # ≥ 3 subject → chia theo người, không rò rỉ, subject ghim luôn ở train
+    root5, kp5 = _ha4m(tmp_path / "b", 6)
+    tr5 = sp.trial_stats(str(root5), kp5)
+    s3 = sp.make_split(tr5, pin_train={"U900"}, seed=1)
+    assert s3["strategy"] == "subject" and not s3["leak_subjects"] and "U900" in s3["subjects"]["train"]
+    assert len(s3["val"]) == 1 and len(s3["test"]) == 1
+    assert sorted(s3["train"] + s3["val"] + s3["test"]) == sorted(tr5["stem"])
+    # CLI: stats + make (không ghi đè) + train bằng --split-file
+    monkeypatch.chdir(tmp_path)
+    assert sp.main(["stats", "--data-root", str(root5), "--keypoints-dir", str(kp5), "--no-wait"]) == 0
+    assert (tmp_path / "outputs/dataset/ha4m_stats.md").exists()
+    args = ["make", "--data-root", str(root5), "--keypoints-dir", str(kp5), "--name", "t", "--pin-train", "U900"]
+    assert sp.main(args) == 0 and sp.main(args) == 1
+    split = json.loads(Path("data/splits/t.json").read_text("utf-8"))
+    from kaizen.train import segmenter as sg
+    rc = sg.main(["train", "--data-root", str(root5), "--keypoints-dir", str(kp5), "--config", str(_station(tmp_path)),
+                  "--split-file", "data/splits/t.json", "--name", "sp", "--epochs", "2", "--stages", "1",
+                  "--layers", "2", "--channels", "8", "--eval-every", "1", "--device", "cpu", "--threads", "1"])
+    assert rc == 0
+    cfg = json.loads(Path("models/segmenter/sp/config.json").read_text())
+    assert cfg["train_trials"] == split["train"] and cfg["val_trials"] == split["val"]
+    assert cfg["test_trials"] == split["test"] and cfg["split_name"] == "t"
